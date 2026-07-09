@@ -117,11 +117,21 @@ Example usage:
   call_dynamic_tool(group="playwright", name="browser_navigate", args={"url": "https://example.com"})
   → Executes the browser_navigate tool from the playwright group with the specified arguments"#;
 
+        let list_groups_desc = "Discover available MCP server groups. Returns each group's name, description, and connection status (connected/failed).\n\nUse this tool first when `enum` fields are not available (e.g., when behind an MCP proxy that strips them), then use get_dynamic_tools to list tools in a specific group, and call_dynamic_tool to execute them.\n\nNo parameters required.";
+
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id,
             result: Some(json!({
                 "tools": [
+                    {
+                        "name": "list_groups",
+                        "description": list_groups_desc,
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
                     {
                         "name": "get_dynamic_tools",
                         "description": get_tools_desc,
@@ -173,6 +183,45 @@ Example usage:
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         match tool_name {
+            "list_groups" => {
+                let client = self.client.read().await;
+                let groups = client.list_groups();
+                let failed_groups = client.list_failed_groups();
+
+                let mut all_groups: Vec<serde_json::Value> = Vec::new();
+
+                for g in &groups {
+                    all_groups.push(json!({
+                        "name": g.name,
+                        "description": g.description,
+                        "status": "connected"
+                    }));
+                }
+
+                for g in &failed_groups {
+                    all_groups.push(json!({
+                        "name": g.name,
+                        "description": g.description,
+                        "status": "failed",
+                        "error": g.error
+                    }));
+                }
+
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id,
+                    result: Some(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&all_groups)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            }
+                        ]
+                    })),
+                    error: None,
+                }
+            }
             "get_dynamic_tools" => {
                 let group = arguments.get("group").and_then(|v| v.as_str());
 
@@ -890,13 +939,17 @@ mod tests {
 
         let result = response.result.unwrap();
         let tools = result.get("tools").unwrap().as_array().unwrap();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
         assert_eq!(
             tools[0].get("name").unwrap().as_str().unwrap(),
-            "get_dynamic_tools"
+            "list_groups"
         );
         assert_eq!(
             tools[1].get("name").unwrap().as_str().unwrap(),
+            "get_dynamic_tools"
+        );
+        assert_eq!(
+            tools[2].get("name").unwrap().as_str().unwrap(),
             "call_dynamic_tool"
         );
     }
@@ -945,6 +998,28 @@ mod tests {
         let error = response.error.unwrap();
         assert_eq!(error.code, -32601);
         assert!(error.message.contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_groups_returns_empty_array() {
+        let server = create_test_server();
+        let request = JsonRpcRequest::new(1, "tools/call").with_params(json!({
+            "name": "list_groups",
+            "arguments": {}
+        }));
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        let content = result.get("content").unwrap().as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0].get("type").unwrap(), "text");
+
+        let text = content[0].get("text").unwrap().as_str().unwrap();
+        let groups: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
+        assert!(groups.is_empty());
     }
 
     #[tokio::test]

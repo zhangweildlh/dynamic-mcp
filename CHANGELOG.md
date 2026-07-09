@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-07-09
+
+### Fixed
+
+- **list_groups Meta-Tool Implementation** - The `list_groups` tool was documented in v1.5.1 changelog but missing from the actual code
+  - Added as the first built-in tool in `tools/list` response (before `get_dynamic_tools` and `call_dynamic_tool`)
+  - Returns JSON array with group name, description, and status (`connected`/`failed`) for each MCP server
+  - No input parameters required — works as a discovery tool independent of `enum` fields
+  - Critical for interoperability with MCP proxies (e.g., mcp-bridge) that strip `enum` during JSON re-serialization
+
 ## [1.5.1] - 2026-07-09
 
 ### Added
