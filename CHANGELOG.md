@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-07-09
+
+### Added
+
+- **list_groups Meta-Tool** - New built-in tool for MCP group discovery without enum dependency
+  - LLMs can discover available MCP server groups when `enum` is stripped by proxy layers
+  - Returns group name, description, and connection status (connected/failed) for each server
+  - Resolves interoperability issue with MCP proxies (e.g., mcp-bridge using mcp-go) that lose `enum` fields during JSON re-serialization
+  - No parameters required; works as a discovery tool before calling `get_dynamic_tools` or `call_dynamic_tool`
+
 ## [1.5.0] - 2026-02-14
 
 ### Added
