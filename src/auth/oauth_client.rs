@@ -130,17 +130,14 @@ impl OAuthClient {
         metadata: &OAuthServerMetadata,
         redirect_url: &str,
     ) -> Result<String> {
-        let registration_endpoint = metadata
-            .registration_endpoint
-            .as_ref()
-            .ok_or_else(|| {
-                anyhow!(
-                    "Server {} does not support dynamic client registration \
+        let registration_endpoint = metadata.registration_endpoint.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Server {} does not support dynamic client registration \
                      (no registration_endpoint in OAuth discovery). \
                      Provide oauth_client_id in config instead.",
-                    server_name
-                )
-            })?;
+                server_name
+            )
+        })?;
 
         tracing::info!(
             "Dynamically registering OAuth client for {} at {}",
@@ -167,11 +164,7 @@ impl OAuthClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!(
-                "Dynamic client registration failed ({}): {}",
-                status,
-                body
-            );
+            bail!("Dynamic client registration failed ({}): {}", status, body);
         }
 
         let reg_response: serde_json::Value = response
