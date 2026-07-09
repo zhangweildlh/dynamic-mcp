@@ -84,7 +84,32 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --all-targets --all-features --message-format=json 2>/dev/null | python3 -c '
+          import sys, json
+          found = False
+          for line in sys.stdin:
+              try:
+                  d = json.loads(line)
+                  if d.get("reason") == "compiler-message":
+                      m = d.get("message", {})
+                      level = m.get("level")
+                      if level in ("warning", "error"):
+                          found = True
+                          code = (m.get("code") or {}).get("code", "unknown")
+                          msg = m.get("message", "")
+                          spans = m.get("spans", [])
+                          if spans:
+                              s = spans[0]
+                              print("::{} file={},line={},col={}::{}: {}".format(
+                                  level, s.get("file_name", ""), s.get("line_start", 0),
+                                  s.get("column_start", 0), code, msg))
+                          else:
+                              print("::{}::{}: {}".format(level, code, msg))
+              except:
+                  pass
+          sys.exit(1 if found else 0)
+          '
 
   build:
     name: Build
