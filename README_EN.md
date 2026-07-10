@@ -464,20 +464,25 @@ You can customize these for servers that need more time:
 - **Environment variables**: Ensure all `${VAR}` references are defined
 - **OAuth servers**: Complete OAuth flow when prompted
 
-**Logging**:
+**Logging and "no console output" (important):**
 
-By default, errors and warnings are logged to the terminal. For more verbose output:
+In **v1.6.0**, when running the server (`--transport http` or `both`), **the console is empty by default — no output at all**. This is not a crash; it is a known behavior:
 
-```bash
-# Debug mode (all logs including debug-level details)
-RUST_LOG=debug uvx dmcp config.json
+- The logging system is only initialized for the `import` subcommand; it is **not** initialized when running the server. So whether or not you set `RUST_LOG`, server mode prints no logs (including the INFO-level "listening on xxx" message, which is suppressed).
+- How to tell the server is actually running? When you connect from a browser / web LLM and get **`HTTP 404`** (rather than "connection refused"), it means the server is already listening — you just used the wrong **path** (see the 404 note under "Parameters → http-path" above).
 
-# Info mode (includes informational messages)
-RUST_LOG=info uvx dmcp config.json
+> ⚠️ **Don't be fooled by the empty console**: seeing nothing in CMD doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`. The "listening" log line is just suppressed.
 
-# Default mode (errors and warnings only, no RUST_LOG needed)
-uvx dmcp config.json
+**Fixed in v1.6.1**: a new `--log-level` / `-v` flag lets you choose the console log level (`info` / `warn` / `error`, etc.); `http` / `both` modes will log at `warn` by default, `stdio` mode at `error` by default, and the "setting `RUST_LOG` does nothing" bug will be fixed.
+
+**Want verbose logs now?** Use this on Windows CMD (formally effective from v1.6.1; v1.6.0's server mode does not yet read `RUST_LOG`):
+
+```cmd
+set RUST_LOG=info
+dmcp.exe --transport http D:\path\to\config.json
 ```
+
+(Note: that is CMD syntax; on bash / Linux / macOS write `RUST_LOG=info dmcp ...`.)
 
 ### OAuth Authentication Problems
 
@@ -674,6 +679,12 @@ dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /pat
 ```
 
 When `--transport http` or `both` is used, the facade is served at `http://<host>:<port><path>` (e.g. `http://127.0.0.1:8082/dynamic-mcp`).
+
+> 💡 **What URL to type in the web LLM (important)**:
+> - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly your `--http-path` value — **do not add or remove a `/mcp` prefix or suffix**.
+> - Example: with `--http-path /dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
+> - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
+> - If the console is completely empty after starting, don't panic: v1.6.0 server mode is silent by default (see "Troubleshooting → Logging" below); as long as you don't get "connection refused", it is listening.
 
 ### Configuration file (no change required)
 

@@ -514,6 +514,12 @@ dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /pat
 
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
 
+> 💡 **网页 LLM 里地址到底怎么填（重点）**：
+> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-path` 的值，**前后都不要再加减 `/mcp`**。
+> - 例如你用 `--http-path /dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
+> - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
+> - 启动后控制台若毫无输出也别慌：v1.6.0 服务器模式默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。
+
 ### 配置文件（无需改动）
 
 v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
@@ -597,20 +603,25 @@ Python 包使用 **maturin** 配合 `bindings = "bin"`，将 Rust 二进制直�
 - **环境变量**：确保全部 `${VAR}` 引用均已定义
 - **OAuth 服务器**：按提示完成 OAuth 流程
 
-**日志：**
+**日志与「控制台没有输出」（重要）：**
 
-默认情况下，错误与警告会记录到终端。如需更详细的输出：
+在 **v1.6.0** 中，运行服务器（`--transport http` 或 `both`）时，**控制台默认是空的、没有任何输出**——这不是程序崩溃，而是已知行为：
 
-```bash
-# 调试模式（全部日志，含 debug 级别细节）
-RUST_LOG=debug uvx dmcp config.json
+- 日志系统只在 `import` 子命令里初始化，运行服务器时**没有**初始化；因此无论你是否设置 `RUST_LOG`，服务器模式都不会打印任何日志（包括 INFO 级的「已在 xxx 监听」提示都会被抑制）。
+- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → http-path」的 404 提醒）。
 
-# 信息模式（含信息级消息）
-RUST_LOG=info uvx dmcp config.json
+> ⚠️ **别被空控制台骗了**：看到 CMD 里一行都没有，以为没启动成功——其实它正安静地监听在 `127.0.0.1:8082`。「监听成功」那行日志只是被屏蔽了而已。
 
-# 默认模式（仅错误与警告，无需 RUST_LOG）
-uvx dmcp config.json
+**v1.6.1 将修复**：新增 `--log-level` / `-v` 参数，允许用户指定控制台日志级别（`info` / `warn` / `error` 等）；并且 `http` / `both` 模式默认输出 `warn` 级日志、`stdio` 模式默认输出 `error` 级日志，同时修掉「设了 `RUST_LOG` 却无效」的问题。
+
+**想现在就看到更详细日志？** 用 Windows CMD 的正确写法（v1.6.1 起正式生效；当前 v1.6.0 的服务器模式暂不读取 `RUST_LOG`）：
+
+```cmd
+set RUST_LOG=info
+dmcp.exe --transport http D:\path\to\config.json
 ```
+
+（注：上面是 CMD 语法；bash / Linux / macOS 下写成 `RUST_LOG=info dmcp ...`。）
 
 ### OAuth 认证问题
 
