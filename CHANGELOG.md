@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-10
+
+### Added
+
+- **Streamable HTTP MCP transport (Route A)** - Expose the grouped-tool facade over a single Streamable HTTP endpoint, multiplexing multiple stdio upstream servers into three tools (`list_groups` / `get_dynamic_tools` / `call_dynamic_tool`).
+  - New `--transport` CLI flag: `stdio` (default), `http`, or `both`
+  - New `--http-host` (default `127.0.0.1`), `--http-port` (default `8082`), `--http-path` (default `/dynamic-mcp`) flags
+  - `HttpFacadeHandler` implements `rmcp::ServerHandler` and serves the facade via `StreamableHttpService` mounted on an axum router (CORS-permissive)
+- `list_groups` meta-tool now also exposed on the stdio surface (previously HTTP-facade only)
+
 ## [1.5.2] - 2026-07-09
 
 ### Fixed
