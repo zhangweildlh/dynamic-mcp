@@ -324,7 +324,9 @@ mod tests {
     #[tokio::test]
     async fn call_list_groups_returns_empty_array() {
         let h = make_handler();
-        let res = h.call_tool_inner("list_groups", serde_json::Value::Null).await;
+        let res = h
+            .call_tool_inner("list_groups", serde_json::Value::Null)
+            .await;
         assert_eq!(res.is_error, Some(false));
         assert_eq!(res.content.len(), 1);
     }
@@ -339,7 +341,9 @@ mod tests {
     #[tokio::test]
     async fn call_call_dynamic_tool_missing_params_errors() {
         let h = make_handler();
-        let res = h.call_tool_inner("call_dynamic_tool", json!({ "group": "x" })).await;
+        let res = h
+            .call_tool_inner("call_dynamic_tool", json!({ "group": "x" }))
+            .await;
         assert_eq!(res.is_error, Some(true));
     }
 

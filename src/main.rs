@@ -17,7 +17,7 @@ use watcher::ConfigWatcher;
 
 use http::server_handler::HttpFacadeHandler;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp::transport::streamable_http_server::{StreamableHttpService, StreamableHttpServerConfig};
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 
@@ -355,11 +355,7 @@ async fn run_server(
                     }
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "Failed to bind Streamable HTTP listener on {}: {}",
-                        addr,
-                        e
-                    );
+                    tracing::error!("Failed to bind Streamable HTTP listener on {}: {}", addr, e);
                 }
             }
         });
