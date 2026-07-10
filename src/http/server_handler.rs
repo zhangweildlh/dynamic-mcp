@@ -202,7 +202,7 @@ impl ServerHandler for HttpFacadeHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let name = request.name.as_ref();
         let arguments: serde_json::Value = match request.arguments {
-            Some(map) => serde_json::Value::Object(map.into()),
+            Some(map) => serde_json::Value::Object(map),
             None => serde_json::Value::Null,
         };
         Ok(self.call_tool_inner(name, arguments).await)
