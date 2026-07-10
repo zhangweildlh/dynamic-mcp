@@ -44,7 +44,7 @@ harness = false
 [dependencies]
 # MCP Protocol Types
 rust-mcp-schema = "0.9"
-rmcp = { version = "0.12", features = ["client", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "0.12", features = ["client", "transport-streamable-http-client-reqwest", "server", "transport-streamable-http-server"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -89,6 +89,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # Process management
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.0"
+
+# HTTP server transport (Streamable HTTP MCP)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

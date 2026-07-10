@@ -1,6 +1,7 @@
 mod auth;
 mod cli;
 mod config;
+mod http;
 mod proxy;
 mod server;
 mod watcher;
@@ -14,6 +15,12 @@ use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use watcher::ConfigWatcher;
 
+use http::server_handler::HttpFacadeHandler;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpService, StreamableHttpServerConfig};
+use std::net::SocketAddr;
+use tower_http::cors::CorsLayer;
+
 #[derive(Parser)]
 #[command(name = "dynamic-mcp")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
@@ -24,6 +31,22 @@ struct Cli {
 
     /// Configuration file path (when running as server without subcommand)
     config_path: Option<String>,
+
+    /// Transport mode: stdio, http, or both
+    #[arg(long, value_enum, default_value = "stdio")]
+    transport: TransportMode,
+
+    /// HTTP host/address to bind when transport includes http
+    #[arg(long, default_value = "127.0.0.1")]
+    http_host: String,
+
+    /// HTTP port to bind when transport includes http
+    #[arg(long, default_value_t = 8082)]
+    http_port: u16,
+
+    /// HTTP path to mount the MCP Streamable HTTP endpoint
+    #[arg(long, default_value = "/dynamic-mcp")]
+    http_path: String,
 }
 
 #[derive(Subcommand)]
@@ -45,6 +68,19 @@ enum Commands {
         #[arg(short, long, default_value = "dynamic-mcp.json")]
         output: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum TransportMode {
+    /// Standard input/output JSON-RPC (default)
+    #[value(name = "stdio")]
+    Stdio,
+    /// Streamable HTTP MCP endpoint only
+    #[value(name = "http")]
+    Http,
+    /// Both stdio and Streamable HTTP simultaneously
+    #[value(name = "both")]
+    Both,
 }
 
 fn get_config_path(cli_arg: Option<String>) -> Option<(String, &'static str)> {
@@ -95,12 +131,27 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 });
 
-            run_server(config_path, config_source).await
+            run_server(
+                config_path,
+                config_source,
+                cli.transport,
+                cli.http_host,
+                cli.http_port,
+                cli.http_path,
+            )
+            .await
         }
     }
 }
 
-async fn run_server(config_path: String, config_source: &str) -> Result<()> {
+async fn run_server(
+    config_path: String,
+    config_source: &str,
+    transport: TransportMode,
+    http_host: String,
+    http_port: u16,
+    http_path: String,
+) -> Result<()> {
     tracing::info!(
         "Starting dynamic-mcp server with config: {} (from {})",
         &config_path,
@@ -251,13 +302,70 @@ async fn run_server(config_path: String, config_source: &str) -> Result<()> {
         }
     });
 
-    let server = ModularMcpServer::new(
-        client.clone(),
-        env!("CARGO_PKG_NAME").to_string(),
-        env!("CARGO_PKG_VERSION").to_string(),
-    );
+    let name = env!("CARGO_PKG_NAME").to_string();
+    let version = env!("CARGO_PKG_VERSION").to_string();
 
-    tracing::info!("MCP server initialized, starting stdio listener...");
+    let stdio_enabled = matches!(transport, TransportMode::Stdio | TransportMode::Both);
+    let http_enabled = matches!(transport, TransportMode::Http | TransportMode::Both);
+
+    if http_enabled {
+        let client_http = client.clone();
+        let name_http = name.clone();
+        let version_http = version.clone();
+        let host = http_host;
+        let port = http_port;
+        let path = http_path;
+
+        tokio::spawn(async move {
+            let factory = move || {
+                Ok::<_, std::io::Error>(HttpFacadeHandler::new(
+                    client_http.clone(),
+                    name_http.clone(),
+                    version_http.clone(),
+                ))
+            };
+
+            let service = StreamableHttpService::new(
+                factory,
+                Arc::new(LocalSessionManager::default()),
+                StreamableHttpServerConfig::default(),
+            );
+
+            let app = axum::Router::new()
+                .nest_service(&path, service)
+                .layer(CorsLayer::permissive());
+
+            let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!("Invalid HTTP listen address {}:{}: {}", host, port, e);
+                    return;
+                }
+            };
+
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    tracing::info!(
+                        "MCP Streamable HTTP server listening on http://{}{}",
+                        addr,
+                        path
+                    );
+                    if let Err(e) = axum::serve(listener, app).await {
+                        tracing::error!("Streamable HTTP server error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to bind Streamable HTTP listener on {}: {}",
+                        addr,
+                        e
+                    );
+                }
+            }
+        });
+    }
+
+    tracing::info!("MCP server initialized (transport={:?})", transport);
 
     // Keep watcher alive
     std::mem::forget(config_watcher);
@@ -272,9 +380,20 @@ async fn run_server(config_path: String, config_source: &str) -> Result<()> {
         std::process::exit(0);
     });
 
-    let result = server.run_stdio().await;
+    let result = if stdio_enabled {
+        let server = ModularMcpServer::new(client.clone(), name.clone(), version.clone());
+        server.run_stdio().await
+    } else {
+        // HTTP-only mode: the spawned HTTP task keeps serving until Ctrl-C,
+        // which the shutdown handler above uses to exit the process.
+        tracing::info!("stdio transport disabled; running HTTP-only. Press Ctrl-C to stop.");
+        tokio::signal::ctrl_c().await.ok();
+        let mut client_lock = client.write().await;
+        let _ = client_lock.disconnect_all().await;
+        Ok(())
+    };
 
-    // Cleanup on normal exit (stdin closed)
+    // Cleanup on normal exit (stdin closed or signal in http-only mode)
     {
         let mut client_lock = client.write().await;
         let _ = client_lock.disconnect_all().await;
