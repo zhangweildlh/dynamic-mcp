@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-13
+
+### Added
+
+- **Server-mode console logging (`--log-level` / `-v`)** - The server process now initializes a `tracing` subscriber (previously only the `import` subcommand did, leaving server mode completely silent and `RUST_LOG` a no-op in v1.6.0).
+  - New `--log-level` (`-v`) CLI flag accepting `trace`/`debug`/`info`/`warn`/`error`
+  - Default level is gated by transport: `http`/`both` -> `warn`, `stdio` -> `error` (keeps stdout clean for the JSON-RPC protocol)
+  - Precedence: `RUST_LOG` env var > `--log-level` flag > transport default
+- **Default config file discovery** - When no config path is given on the command line or via `DYNAMIC_MCP_CONFIG`, dynamic-mcp falls back to loading `dynamic-mcp.json` from the same directory as the executable.
+- **`--http-endpoint` flag (single settings method)** - Replaces the three separate `--http-host` / `--http-port` / `--http-path` flags with one combined `host:port/path` setting (default `127.0.0.1:8082/dynamic-mcp`). Breaking change: the old per-field flags are removed.
+
+### Fixed
+
+- **RUST_LOG now effective in server mode** - the server process initializes a `tracing` subscriber writing to **stderr** (previously silent, and stdout could leak into the stdio JSON-RPC channel).
+- **Listening address shown by default** - the "MCP Streamable HTTP server listening on ..." line is now `warn` so it appears under the default `http`/`both` log level.
+- **Static `Authorization` header skips OAuth (TickTick regression)** - when a server config already carries a static `Authorization` header and no `oauth_client_id`, the OAuth browser flow is no longer triggered; the connection uses the header directly. Fixes `Transport creation timed out` against servers like `https://mcp.dida365.com`.
+- **OAuth callback host** - the local OAuth redirect URI now uses `127.0.0.1` instead of `localhost`, fixing callback connection failures caused by IPv4/IPv6 resolution mismatch.
+- **Precise config error location** - configuration parse errors now report the exact line, column, and field path (e.g. `line 12 column 5, field mcpServers.TickTick.url`) instead of an opaque message.
+
+### Changed
+
+- **Default config file name** - from `dmcp_config.json` to `dynamic-mcp.json` (clean break; rename your existing config file).
+
 ## [1.6.0] - 2026-07-10
 
 ### Added

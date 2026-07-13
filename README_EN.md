@@ -62,27 +62,11 @@ The full technical explanation for developers follows (you don't need it to get 
 
 ### Installation
 
-#### Option 1: Python package
+> 💡 **Download the binary (recommended)**: this repository (fork) is **not** published to PyPI / crates.io. Download the binary for your OS from the fork's [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) page (`dmcp` / `dmcp.exe`), put it in your `PATH`, and you're done — no need to compile.
 
-Use `uvx` to run the [PyPI package](https://pypi.org/project/dmcp/) in your agent's MCP settings:
+#### Option 1: Download the native binary (recommended)
 
-```json
-{
-  "mcpServers": {
-    "dynamic-mcp": {
-      "command": "uvx",
-      "args": ["dmcp", "/path/to/your/dynamic-mcp.json"]
-    }
-  }
-}
-```
-
-You can set the `DYNAMIC_MCP_CONFIG` environment variable and omit the config path.
-
-#### Option 2: Native binary
-
-Download a [release](https://github.com/asyrjasalo/dynamic-mcp/releases) for
-your operating system and put `dmcp` in your `PATH`:
+Download a [release](https://github.com/zhangweildlh/dynamic-mcp/releases) for your operating system and put `dmcp` (on Windows, `dmcp.exe`) in your `PATH`:
 
 ```json
 {
@@ -96,15 +80,16 @@ your operating system and put `dmcp` in your `PATH`:
 
 Set the `DYNAMIC_MCP_CONFIG` environment variable and omit the `args` altogether.
 
-#### Option 3: Compile from source
+#### Option 2: Build from source (advanced)
 
-Install from [crates.io](https://crates.io/crates/dynamic-mcp):
+Requires a Rust toolchain on your machine. See "[Building from source](#building-from-source)" below.
 
-```text
-cargo install dynamic-mcp
+```bash
+git clone https://github.com/zhangweildlh/dynamic-mcp.git
+cd dynamic-mcp
+cargo build --release
+# The binary is at ./target/release/dmcp (dmcp.exe on Windows)
 ```
-
-The binary is then available at `~/.cargo/bin/dmcp` (`$CARGO_HOME/bin/dmcp`).
 
 ### Import from AI Coding Tools
 
@@ -162,7 +147,7 @@ $ dmcp import cursor
 
 ✅ Found 2 MCP server(s) to import
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Server: filesystem
 Type: stdio
 
@@ -447,6 +432,160 @@ You can customize these for servers that need more time:
 - Applies only to tool/resource/prompt call operations, not to connection or initialization
 - Useful for servers with long-running operations (database queries, file processing, etc.)
 
+## Streamable HTTP Transport (v1.6.0)
+
+In addition to the default stdio transport, dynamic-mcp can now expose its grouped-tool facade over a single **Streamable HTTP MCP** endpoint. This lets HTTP/SSE-based MCP clients (web UIs, remote agents, other MCP proxies, gateways) connect to dynamic-mcp without stdio.
+
+The HTTP endpoint aggregates all configured upstream (stdio) servers into a 3-tool facade:
+
+- `list_groups` — list all configured groups with connection status.
+- `get_dynamic_tools` — fetch the tool schemas of a selected group (on demand).
+- `call_dynamic_tool` — invoke a tool on a selected group through the proxy.
+
+### Transport modes (stdio / http / both)
+
+Since v1.6.0, `--transport` decides how dynamic-mcp serves clients. The single most important difference between the modes is **who starts the process**:
+
+#### Mode 1 · stdio (default, `--transport stdio`)
+
+- **What it is**: dynamic-mcp runs as a local subprocess on your machine; data goes over standard input/output (stdio).
+- **Who starts it**: The **normal way to run stdio mode is for an LLM client to launch it** — you list `"command": "dmcp"` in the MCP config of a desktop client such as Claude Desktop, Cursor, or VS Code, and the client starts dmcp and owns its input/output; the process is born when the client starts and dies when the client exits. **You can also run `dmcp config.json` manually in a terminal**, but then its stdin/stdout are only attached to your terminal with no LLM client driving them — there is no "conversation partner", so it cannot actually be used. For this reason, stdio mode is only useful when launched by an LLM client.
+- **When to use**: Only when you run a desktop AI client locally on your own machine.
+- **Limitation**: An LLM running in a browser, the cloud, or on a phone cannot launch a local process on your machine, so **those environments cannot use stdio mode**.
+
+#### Mode 2 · HTTP (`--transport http`)
+
+- **What it is**: dynamic-mcp runs as a **long-lived HTTP service**, exposing a Streamable HTTP MCP endpoint (`http://<host>:<port><path>`) that any HTTP-capable client can connect to.
+- **Who starts it**: **Only you (the user) can start it manually — an LLM cannot launch it.** The reason: Mode 2 was added precisely to fix stdio's shortcoming. An LLM app in a browser, the cloud, or on a phone has no way to spawn a local subprocess on your machine; so **you must first start it yourself in a terminal or as a service and keep it listening**, and only then can a remote LLM connect to it. **In Mode 2 the LLM is only a "connector", never the "launcher".**
+- **When to use**: Browser extensions, cloud agents, mobile apps, remote / containerized environments (Docker, k8s), or when multiple clients need to share one backend.
+- **Minimal start command:**
+
+  ```bash
+  dmcp --transport http /path/to/dynamic-mcp.json
+  ```
+
+#### Mode 3 · both (`--transport both`)
+
+- **What it is**: stdio and HTTP run at the same time — one process, two entry points (the back window + the front door).
+- **Advantages / highlights**:
+  - **One program does the job of two**: the desktop AI app uses the stdio door, browser/phone/cloud assistants use the HTTP window — **one process serves both kinds of clients**, no need to run two dmcp instances.
+  - **Shares one set of upstream connections and config**: both entry points use the same upstream tools and the same config file, saving memory and resources, configured only once.
+  - **Less hassle**: without `both` you'd run two programs (one stdio for the desktop, one http for the browser) — double connections, double memory, two configs; `both` removes all that.
+- **Who starts it (key)**: **let your desktop AI app (Claude Desktop / Cursor / VS Code) launch it**, not a manual terminal start. When the app launches dmcp it opens the stdio door and stands inside, the process stays alive, and the HTTP window opens too so the browser assistant can connect. A manual start leaves the stdio door idle and the desktop app can't use it — wasting `both`. See "Understand it in 3 minutes" above for the plain-language version.
+- **When to use**: when you need both local desktop token savings AND browser/cloud/mobile remote use of the same upstream tools.
+
+### Parameters
+
+Command-line flags control HTTP exposure (the config file is **unchanged** — see below):
+
+| Flag            | Default                    | Description (plain language)                                                                                                                                                                                                      |
+| --------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--transport`   | `stdio`                    | Which doors to open: `stdio` for the desktop AI app only; `http` for browser/phone/cloud only; `both` for both (recommended: let the desktop AI app open it for you).                                                          |
+| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | The HTTP "window" as a single `host:port/path`. Default `127.0.0.1:8082/dynamic-mcp` (safest — only your own machine can reach it). To let LAN/other devices connect, change to `0.0.0.0:8082/dynamic-mcp` (security risk); change the port if taken (e.g. `:9000`); the client's connection URL must end with the same `/dynamic-mcp` path. Supports IPv6 as `[::1]:8082/dynamic-mcp`. |
+| `--log-level`   | (gated by mode)            | Console log level: `trace`/`debug`/`info`/`warn`/`error`. Default by mode: `http`/`both` = `warn`, `stdio` = `error`. `RUST_LOG` env var takes highest precedence. Short form: `-v`.                                          |
+
+### Usage
+
+```bash
+# HTTP only (stdio disabled):
+dmcp --transport http /path/to/dynamic-mcp.json
+
+# Both stdio and HTTP at the same time:
+dmcp --transport both /path/to/dynamic-mcp.json
+
+# Bind on all interfaces, custom port and path:
+dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
+```
+
+When `--transport http` or `both` is used, the facade is served at `http://<host>:<port><path>` (e.g. `http://127.0.0.1:8082/dynamic-mcp`).
+
+> 💡 **What URL to type in the web LLM (important)**:
+> - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly the part after `/` in your `--http-endpoint` — **do not add or remove a `/mcp` prefix or suffix**.
+> - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
+> - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
+> - If the console is completely empty after starting in `stdio` mode, don't panic: stdio defaults to `error` level (silence is normal). In `http`/`both` mode it defaults to `warn` and you should see "listening on …". As long as you don't get "connection refused", it is listening (see "Troubleshooting → Logging" below).
+
+### Configuration file (no change required)
+
+v1.6.0 does **not** modify the `dynamic-mcp.json` schema; v1.7.0 doesn't either. Your existing configuration works as-is; HTTP exposure is controlled entirely by the CLI flags above. The same `config-schema.json` applies.
+
+> **Where to find the config file (since v1.7.0)**: priority is ① the first positional CLI argument → ② the `DYNAMIC_MCP_CONFIG` environment variable → ③ **`dynamic-mcp.json` next to the executable**. If neither of the first two is given, it automatically loads `dynamic-mcp.json` from the directory the executable lives in; only if all three are missing does it error out. Put the config file next to `dmcp.exe` and just run `dmcp` — no path needed.
+
+Example `dynamic-mcp.json` (unchanged):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "description": "Use when you need to read, write, or search files.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
+
+Then run with HTTP enabled:
+
+```bash
+dmcp --transport both /path/to/dynamic-mcp.json
+```
+
+### Application scenarios
+
+- **Remote / containerized deployment** where stdio is unavailable (Docker, k8s, remote VM).
+- **Reverse-proxy / gateway fronting** dynamic-mcp (nginx, Traefik) so multiple clients share one backend.
+- **Web-based MCP clients and playgrounds** that speak Streamable HTTP.
+- **Cascaded MCP proxies** — a second proxy or orchestrator connects to dynamic-mcp over HTTP instead of spawning subprocesses.
+- **Single-endpoint multi-group access** — one HTTP endpoint serves every group; the client selects a group via `get_dynamic_tools` / `call_dynamic_tool`.
+
+## v1.7.0 feature deep-dive (plain language)
+
+Here is a plain-language walkthrough of the 6 changes in v1.7.0 relative to v1.6.0. **None of them require you to edit your config** (except renaming the config file), but together they make "auth-protected remote servers actually connect", "logs become visible", and "when config is wrong, you know exactly where".
+
+### 1. The config file was renamed: dmcp_config.json → dynamic-mcp.json
+
+- **Before**: the default config file was `dmcp_config.json`.
+- **Now**: it is `dynamic-mcp.json`. This is a **breaking rename** — your old `dmcp_config.json` will not be read automatically; rename the file (the contents stay the same).
+- **Bonus**: if you pass no path at all, dmcp will **automatically look for `dynamic-mcp.json` inside the folder where the executable itself lives**. So put `dmcp.exe` and `dynamic-mcp.json` in the same folder, just run `dmcp`, and it starts — no path to remember.
+- Config resolution priority: ① first positional CLI argument → ② `DYNAMIC_MCP_CONFIG` env var → ③ `dynamic-mcp.json` next to the executable. Only if all three are missing does it error out.
+
+### 2. HTTP settings: three switches merged into one address
+
+- **Before**: you had to set `--http-host`, `--http-port`, `--http-path` separately.
+- **Now**: a single `--http-endpoint host:port/path`, e.g. `--http-endpoint 127.0.0.1:8082/dynamic-mcp` (this is also the default). To let LAN/other devices connect, change to `0.0.0.0:8082/dynamic-mcp`; if the port is taken, use `:9000`; to customize the path, write `127.0.0.1:8082/your-name` and the client's URL must end with the same path.
+- The old `--http-host` / `--http-port` / `--http-path` flags are **removed** — using them is an error.
+- IPv6 is supported: write `--http-endpoint [::1]:8082/dynamic-mcp` (wrap the IPv6 address in square brackets).
+
+### 3. Logging finally "makes a sound" (`--log-level` / `-v`)
+
+- **Before (v1.6.0)**: server mode never initialized logging. Whether or not you set `RUST_LOG`, the console was silent; to know if it was running you had to infer it from "the browser returns 404 instead of connection refused" — frustrating.
+- **Now (v1.7.0)**: the server prints logs to **stderr** (no longer polluting the stdio JSON-RPC channel), and `RUST_LOG` actually works.
+- New `--log-level` (short `-v`) flag, accepting `trace` / `debug` / `info` / `warn` / `error`.
+- Default level when unspecified, gated by mode: `http` / `both` → `warn` (so by default you see "listening on http://127.0.0.1:8082/…"); `stdio` → `error` (only errors, to keep stdout clean for the protocol).
+- **Precedence**: `RUST_LOG` env var > `--log-level` CLI flag > mode default. So `RUST_LOG=debug` overrides `--log-level info`.
+
+### 4. Servers with a static Authorization header no longer pop OAuth / time out (fixes TickTick / dida365)
+
+- **Symptom**: servers like TickTick (`mcp.dida365.com`), which require you to hard-code `Authorization: Bearer xxx` in the config, used to trigger an OAuth browser login anyway, hang for 5 seconds, then fail with `Transport creation timed out` — they simply couldn't connect.
+- **Cause**: the old code unconditionally ran the OAuth flow for HTTP/SSE servers, ignoring the static auth header you already provided.
+- **Now**: the transport layer now agrees with the config's `needs_oauth()` check — **if the config has no `oauth_client_id` and already carries an `Authorization` header, it connects directly using that header and skips the OAuth browser flow**. Servers like TickTick now connect normally.
+- Only servers that truly need OAuth (those with `oauth_client_id`, or with neither client_id nor an Authorization header) will open the browser login.
+
+### 5. OAuth callback host: localhost → 127.0.0.1 (fixes IPv4 / IPv6 mismatch)
+
+- **Before**: after OAuth login, the server redirected the browser back to `http://localhost:<port>`. On some systems `localhost` resolves to IPv6 `::1` first, while dmcp only listens on IPv4 `127.0.0.1`, so the callback couldn't connect and login hung.
+- **Now**: the callback uniformly uses `http://127.0.0.1:<port>`, matching the listen address, so the IPv4/IPv6 mismatch is gone.
+
+### 6. Config errors now tell you "line, column, and which field"
+
+- **Before**: a syntax or field error in the config JSON gave a vague message and you had to guess.
+- **Now**: the error precisely reports the **line, column, and the path of the offending field**, e.g. `line 12 column 5, field mcpServers.TickTick.url` — you can see at a glance that the `url` field of the `TickTick` server, at line 12 column 5, is wrong.
+
+## Fork builds via GitHub Actions
+
+> **Note:** The upstream repository has not been updated for an extended period. To use the v1.7.0 features (HTTP facade, logging, `--http-endpoint`, static-auth OAuth skip, etc.) without waiting for an upstream release, this fork builds its own binaries through **GitHub Actions** (the Release workflow triggered by pushing a `v*` tag). Cross-platform binaries — including Windows `dmcp.exe` — are produced as release assets. These builds are **not** published to crates.io / PyPI; download the binary directly from the fork's [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) page.
+
 ## Troubleshooting
 
 ### Server Connection Issues
@@ -464,25 +603,29 @@ You can customize these for servers that need more time:
 - **Environment variables**: Ensure all `${VAR}` references are defined
 - **OAuth servers**: Complete OAuth flow when prompted
 
-**Logging and "no console output" (important):**
+**Logging level (`--log-level` / `-v`, since v1.7.0):**
 
-In **v1.6.0**, when running the server (`--transport http` or `both`), **the console is empty by default — no output at all**. This is not a crash; it is a known behavior:
+The server process now initializes the logging system properly, so the console is no longer "permanently silent".
 
-- The logging system is only initialized for the `import` subcommand; it is **not** initialized when running the server. So whether or not you set `RUST_LOG`, server mode prints no logs (including the INFO-level "listening on xxx" message, which is suppressed).
-- How to tell the server is actually running? When you connect from a browser / web LLM and get **`HTTP 404`** (rather than "connection refused"), it means the server is already listening — you just used the wrong **path** (see the 404 note under "Parameters → http-path" above).
+- New `--log-level` (short `-v`) flag selects the console level: `trace` / `debug` / `info` / `warn` / `error`.
+- When `--log-level` is not given, the default level is gated by transport:
+  - `http` / `both`: default `warn` — by default you'll see the "listening on http://127.0.0.1:8082/…" message.
+  - `stdio`: default `error` — only errors print, to avoid polluting the JSON-RPC protocol on stdout.
+- Precedence: **`RUST_LOG` env var > `--log-level` CLI flag > transport default level**. So `RUST_LOG=debug` still overrides `--log-level info`.
 
-> ⚠️ **Don't be fooled by the empty console**: seeing nothing in CMD doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`. The "listening" log line is just suppressed.
+> Historical note: in v1.6.0 the server mode never initialized a logging system, so there was no output at all regardless of `RUST_LOG`; the only way to tell it was running was "the browser returns 404 instead of connection refused" (see the 404 note under `--http-endpoint` above). Fixed in v1.7.0.
 
-**Fixed in v1.6.1**: a new `--log-level` / `-v` flag lets you choose the console log level (`info` / `warn` / `error`, etc.); `http` / `both` modes will log at `warn` by default, `stdio` mode at `error` by default, and the "setting `RUST_LOG` does nothing" bug will be fixed.
-
-**Want verbose logs now?** Use this on Windows CMD (formally effective from v1.6.1; v1.6.0's server mode does not yet read `RUST_LOG`):
+**Want more verbose logs now?** On Windows CMD:
 
 ```cmd
+:: set the level with -v
+dmcp.exe -v info --transport http D:\path\to\config.json
+:: or rely on RUST_LOG (also works)
 set RUST_LOG=info
 dmcp.exe --transport http D:\path\to\config.json
 ```
 
-(Note: that is CMD syntax; on bash / Linux / macOS write `RUST_LOG=info dmcp ...`.)
+(Note: the above is CMD syntax; on bash / Linux / macOS write `dmcp -v info --transport http config.json`, or `RUST_LOG=info dmcp --transport http config.json`.)
 
 ### OAuth Authentication Problems
 
@@ -491,7 +634,7 @@ dmcp.exe --transport http D:\path\to\config.json
 **Solutions**:
 
 - Manually open the URL shown in the console
-- Check that the firewall allows localhost connections
+- Check that the firewall allows `127.0.0.1` connections (not just `localhost`)
 - Verify `oauth_client_id` is correct for the server
 
 **Problem**: Token refresh fails
@@ -588,139 +731,17 @@ dmcp.exe --transport http D:\path\to\config.json
 
 ### Rust Binary
 
-To build the Rust binary directly:
+To build the Rust binary directly (requires a Rust toolchain on your machine):
 
 ```bash
-git clone https://github.com/asyrjasalo/dynamic-mcp.git
+git clone https://github.com/zhangweildlh/dynamic-mcp.git
 cd dynamic-mcp
 cargo build --release
 ```
 
-The binary is then available at `./target/release/dmcp`.
+The binary is then available at `./target/release/dmcp` (`dmcp.exe` on Windows).
 
-### Python Package
-
-To build the Python package (wheel):
-
-```bash
-# Build wheel
-uvx maturin build --release
-
-# Install locally
-pip install target/wheels/dmcp-*.whl
-```
-
-The Python package uses **maturin** with `bindings = "bin"` to compile the Rust binary directly into the wheel.
-
-## Streamable HTTP Transport (v1.6.0)
-
-In addition to the default stdio transport, dynamic-mcp can now expose its grouped-tool facade over a single **Streamable HTTP MCP** endpoint. This lets HTTP/SSE-based MCP clients (web UIs, remote agents, other MCP proxies, gateways) connect to dynamic-mcp without stdio.
-
-The HTTP endpoint aggregates all configured upstream (stdio) servers into a 3-tool facade:
-
-- `list_groups` — list all configured groups with connection status.
-- `get_dynamic_tools` — fetch the tool schemas of a selected group (on demand).
-- `call_dynamic_tool` — invoke a tool on a selected group through the proxy.
-
-### Transport modes (stdio / http / both)
-
-Since v1.6.0, `--transport` decides how dynamic-mcp serves clients. The single most important difference between the modes is **who starts the process**:
-
-#### Mode 1 · stdio (default, `--transport stdio`)
-
-- **What it is**: dynamic-mcp runs as a local subprocess on your machine; data goes over standard input/output (stdio).
-- **Who starts it**: The **normal way to run stdio mode is for an LLM client to launch it** — you list `"command": "dmcp"` in the MCP config of a desktop client such as Claude Desktop, Cursor, or VS Code, and the client starts dmcp and owns its input/output; the process is born when the client starts and dies when the client exits. **You can also run `dmcp config.json` manually in a terminal**, but then its stdin/stdout are only attached to your terminal with no LLM client driving them — there is no "conversation partner", so it cannot actually be used. For this reason, stdio mode is only useful when launched by an LLM client.
-- **When to use**: Only when you run a desktop AI client locally on your own machine.
-- **Limitation**: An LLM running in a browser, the cloud, or on a phone cannot launch a local process on your machine, so **those environments cannot use stdio mode**.
-
-#### Mode 2 · HTTP (`--transport http`)
-
-- **What it is**: dynamic-mcp runs as a **long-lived HTTP service**, exposing a Streamable HTTP MCP endpoint (`http://<host>:<port><path>`) that any HTTP-capable client can connect to.
-- **Who starts it**: **Only you (the user) can start it manually — an LLM cannot launch it.** The reason: Mode 2 was added precisely to fix stdio's shortcoming. An LLM app in a browser, the cloud, or on a phone has no way to spawn a local subprocess on your machine; so **you must first start it yourself in a terminal or as a service and keep it listening**, and only then can a remote LLM connect to it. **In Mode 2 the LLM is only a "connector", never the "launcher".**
-- **When to use**: Browser extensions, cloud agents, mobile apps, remote / containerized environments (Docker, k8s), or when multiple clients need to share one backend.
-- **Minimal start command:**
-
-  ```bash
-  dmcp --transport http /path/to/dynamic-mcp.json
-  ```
-
-#### Mode 3 · both (`--transport both`)
-
-- **What it is**: stdio and HTTP run at the same time — one process, two entry points (the back window + the front door).
-- **Advantages / highlights**:
-  - **One program does the job of two**: the desktop AI app uses the stdio door, browser/phone/cloud assistants use the HTTP window — **one process serves both kinds of clients**, no need to run two dmcp instances.
-  - **Shares one set of upstream connections and config**: both entry points use the same upstream tools and the same config file, saving memory and resources, configured only once.
-  - **Less hassle**: without `both` you'd run two programs (one stdio for the desktop, one http for the browser) — double connections, double memory, two configs; `both` removes all that.
-- **Who starts it (key)**: **let your desktop AI app (Claude Desktop / Cursor / VS Code) launch it**, not a manual terminal start. When the app launches dmcp it opens the stdio door and stands inside, the process stays alive, and the HTTP window opens too so the browser assistant can connect. A manual start leaves the stdio door idle and the desktop app can't use it — wasting `both`. See "Understand it in 3 minutes" above for the plain-language version.
-- **When to use**: when you need both local desktop token savings AND browser/cloud/mobile remote use of the same upstream tools.
-
-### Parameters
-
-New command-line flags control HTTP exposure (the config file is **unchanged** — see below):
-
-| Flag           | Default        | Description (plain language)                |
-| -------------- | -------------- | ------------------------------------------- |
-| `--transport`  | `stdio`        | Which doors to open: `stdio` for the desktop AI app only; `http` for browser/phone/cloud only; `both` for both (recommended: let the desktop AI app open it for you). |
-| `--http-host`  | `127.0.0.1`    | Which machine the HTTP window "binds to". Default `127.0.0.1` = only your own computer can reach it (safest). Usually leave it; change only to let LAN/other devices connect (has security risk). |
-| `--http-port`  | `8082`         | The window's "door number". Default 8082; change it (e.g. 9000) if another program already uses 8082. |
-| `--http-path`  | `/dynamic-mcp` | The window's "room name". The address you type in the client must end with it, e.g. `http://127.0.0.1:8082/dynamic-mcp`. |
-
-### Usage
-
-```bash
-# HTTP only (stdio disabled):
-dmcp --transport http /path/to/dynamic-mcp.json
-
-# Both stdio and HTTP at the same time:
-dmcp --transport both /path/to/dynamic-mcp.json
-
-# Bind on all interfaces, custom port/path:
-dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /path/to/dynamic-mcp.json
-```
-
-When `--transport http` or `both` is used, the facade is served at `http://<host>:<port><path>` (e.g. `http://127.0.0.1:8082/dynamic-mcp`).
-
-> 💡 **What URL to type in the web LLM (important)**:
-> - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly your `--http-path` value — **do not add or remove a `/mcp` prefix or suffix**.
-> - Example: with `--http-path /dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
-> - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
-> - If the console is completely empty after starting, don't panic: v1.6.0 server mode is silent by default (see "Troubleshooting → Logging" below); as long as you don't get "connection refused", it is listening.
-
-### Configuration file (no change required)
-
-v1.6.0 does **not** modify the `dynamic-mcp.json` schema. Your existing configuration works as-is; HTTP exposure is controlled entirely by the CLI flags above. The same `config-schema.json` applies.
-
-Example `dynamic-mcp.json` (unchanged):
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "description": "Use when you need to read, write, or search files.",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    }
-  }
-}
-```
-
-Then run with HTTP enabled:
-
-```bash
-dmcp --transport both /path/to/dynamic-mcp.json
-```
-
-### Application scenarios
-
-- **Remote / containerized deployment** where stdio is unavailable (Docker, k8s, remote VM).
-- **Reverse-proxy / gateway fronting** dynamic-mcp (nginx, Traefik) so multiple clients share one backend.
-- **Web-based MCP clients and playgrounds** that speak Streamable HTTP.
-- **Cascaded MCP proxies** — a second proxy or orchestrator connects to dynamic-mcp over HTTP instead of spawning subprocesses.
-- **Single-endpoint multi-group access** — one HTTP endpoint serves every group; the client selects a group via `get_dynamic_tools` / `call_dynamic_tool`.
-
-## Fork builds via GitHub Actions
-
-> **Note:** The upstream repository has not been updated for an extended period. To use the v1.6.0 features (including the HTTP facade) without waiting for an upstream release, this fork builds its own binaries through **GitHub Actions** (the Release workflow triggered by pushing a `v*` tag). Cross-platform binaries — including Windows `dmcp.exe` — are produced as release assets. These builds are **not** published to crates.io / PyPI; download the binary directly from the fork's Releases page.
+> Note: this fork builds cross-platform binaries automatically via GitHub Actions when a `v*` tag is pushed, and publishes them to [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases). Ordinary users **don't need to compile** — just download the binary.
 
 ## Contributing
 

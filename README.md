@@ -62,26 +62,11 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 ### 安装
 
-#### 方式一：Python 包
+> 💡 **推荐下载二进制使用**：本仓库（fork）不发布到 PyPI / crates.io，请从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载对应操作系统的二进制（`dmcp` / `dmcp.exe`），放入 `PATH` 即可，无需自行编译。
 
-在你的智能体 MCP 设置中使用 `uvx` 运行 [PyPI 包](https://pypi.org/project/dmcp/)：
+#### 方式一：下载原生二进制（推荐）
 
-```json
-{
-  "mcpServers": {
-    "dynamic-mcp": {
-      "command": "uvx",
-      "args": ["dmcp", "/path/to/your/dynamic-mcp.json"]
-    }
-  }
-}
-```
-
-你也可以设置 `DYNAMIC_MCP_CONFIG` 环境变量，从而省略配置文件路径。
-
-#### 方式二：原生二进制
-
-从 [Releases](https://github.com/asyrjasalo/dynamic-mcp/releases) 下载对应操作系统的版本，把 `dmcp` 放入 `PATH`：
+从 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 下载对应操作系统的版本，把 `dmcp`（Windows 为 `dmcp.exe`）放入 `PATH`：
 
 ```json
 {
@@ -95,15 +80,16 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 设置 `DYNAMIC_MCP_CONFIG` 环境变量后可完全省略 `args`。
 
-#### 方式三：从源码编译
+#### 方式二：从源码自行编译（进阶）
 
-从 [crates.io](https://crates.io/crates/dynamic-mcp) 安装：
+需要本机装有 Rust 工具链。步骤见文末「[从源码构建](#从源码构建)」。
 
-```text
-cargo install dynamic-mcp
+```bash
+git clone https://github.com/zhangweildlh/dynamic-mcp.git
+cd dynamic-mcp
+cargo build --release
+# 构建后二进制位于 ./target/release/dmcp（Windows 为 dmcp.exe）
 ```
-
-安装后二进制位于 `~/.cargo/bin/dmcp`（`$CARGO_HOME/bin/dmcp`）。
 
 ### 从 AI 编码工具导入
 
@@ -495,9 +481,8 @@ v1.6.0 起，`--transport` 决定 dynamic-mcp 以哪种方式对外服务。三�
 | 参数            | 默认值          | 说明（人话）                                      |
 | --------------- | --------------- | ------------------------------------------------- |
 | `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
-| `--http-host`   | `127.0.0.1`     | HTTP 对外窗口「绑在哪台机器」。默认 `127.0.0.1` = 只有你本机连得上（最安全）。一般别改；想让同局域网/其他设备也能连才改（有安全风险）。 |
-| `--http-port`   | `8082`          | 对外窗口的「门牌号」。默认 8082；若被别的程序占用就换一个（如 9000）。 |
-| `--http-path`   | `/dynamic-mcp`  | 窗口上的「房间名」。客户端连接时填的地址末尾要和它对上，例如 `http://127.0.0.1:8082/dynamic-mcp`。 |
+| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | HTTP 对外窗口的「主机:端口/路径」合一设置。默认本机 `127.0.0.1:8082/dynamic-mcp`（最安全，仅本机可连）。想让同局域网/其他设备也能连就改成 `0.0.0.0:8082/dynamic-mcp`（有安全风险）；端口被占用就换（如 `:9000`）；客户端连接地址末尾的 `/dynamic-mcp` 要和它一致。 |
+| `--log-level`   | （按模式门控）   | 控制台日志级别：`trace`/`debug`/`info`/`warn`/`error`。默认按模式：http/both=`warn`、stdio=`error`；`RUST_LOG` 优先级最高。简写 `-v`。 |
 
 ### 使用方法
 
@@ -509,20 +494,22 @@ dmcp --transport http /path/to/dynamic-mcp.json
 dmcp --transport both /path/to/dynamic-mcp.json
 
 # 绑定到所有网卡，自定义端口与路径：
-dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /path/to/dynamic-mcp.json
+dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 ```
 
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
 
 > 💡 **网页 LLM 里地址到底怎么填（重点）**：
-> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-path` 的值，**前后都不要再加减 `/mcp`**。
-> - 例如你用 `--http-path /dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
+> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `/` 之后的部分，**前后都不要再加减 `/mcp`**。
+> - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
-> - 启动后控制台若毫无输出也别慌：v1.6.0 服务器模式默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。
+> - 启动后控制台若毫无输出：stdio 模式默认只打 `error` 级（安静是正常的）；http/both 模式默认打 `warn` 级，应能看到「已在 … 监听」。只要浏览器不是报「无法连接」，就说明它正在监听（详见下方「故障排查 → 日志」）。
 
 ### 配置文件（无需改动）
 
-v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
+v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema；v1.7.0 也未改动。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
+
+> **配置文件去哪找（v1.7.0 起）**：优先级为 ①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③**`dmcp.exe` 同目录下的 `dynamic-mcp.json`**。前两者都没给时，会自动在可执行文件所在目录找 `dynamic-mcp.json` 并加载；只有三者都缺失才报错退出。把配置文件和 `dmcp.exe` 放一起、直接 `dmcp` 即可启动，无需写路径。
 
 示例 `dynamic-mcp.json`（保持不变）：
 
@@ -552,39 +539,70 @@ dmcp --transport both /path/to/dynamic-mcp.json
 - **级联 MCP 代理**：第二个代理 / 编排器通过 HTTP 连接 dynamic-mcp，而无需拉起子进程。
 - **单端点多分组访问**：一个 HTTP 端点服务所有分组；客户端通过 `get_dynamic_tools` / `call_dynamic_tool` 选择分组。
 
+## v1.7.0 版功能详解（大白话）
+
+下面用大白话把 v1.7.0 相对 v1.6.0 的 6 处改动讲清楚。这些改动**都不需要你改配置文件**（除非你要给配置文件改名），但能让「带鉴权的远程服务器连得上」「日志看得到」「配错了知道错在哪」。
+
+### 1. 配置文件改名了：dmcp_config.json → dynamic-mcp.json
+
+- **以前**：默认配置文件叫 `dmcp_config.json`。
+- **现在**：叫 `dynamic-mcp.json`。这是**破坏性改名**——你原来的 `dmcp_config.json` 不会被自动读取，请把文件重命名一下（内容不用改）。
+- **顺带多了个贴心功能**：如果你不写任何路径，dmcp 会**自动去「程序自己所在的文件夹」里找 `dynamic-mcp.json`**。也就是说，把 `dmcp.exe` 和 `dynamic-mcp.json` 放同一个文件夹，直接运行 `dmcp` 就能启动，不用记路径。
+- 找配置文件的优先级：①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③程序同目录下的 `dynamic-mcp.json`。三个都没有才报错退出。
+
+### 2. HTTP 设置从「三个开关」合并成「一个地址」
+
+- **以前**：要分别写 `--http-host`、`--http-port`、`--http-path` 三个参数。
+- **现在**：只写一个 `--http-endpoint host:port/path`，例如 `--http-endpoint 127.0.0.1:8082/dynamic-mcp`（这也是默认值）。想让同局域网 / 其他设备访问就改成 `0.0.0.0:8082/dynamic-mcp`；端口被占用就换 `:9000`；路径想自定义就写 `127.0.0.1:8082/你起的名字`，客户端连接地址的末尾要和它一致。
+- 旧的 `--http-host` / `--http-port` / `--http-path` 已**删除**，用了会报错。
+- 支持 IPv6：写成 `--http-endpoint [::1]:8082/dynamic-mcp`（用方括号把 IPv6 地址包起来）。
+
+### 3. 日志终于「有声音」了（--log-level / -v）
+
+- **以前（v1.6.0）**：服务器模式完全不初始化日志，无论你设不设 `RUST_LOG`，控制台都静默；想确认它有没有在运行，只能靠「浏览器返回 404 而不是连不上」来反推，很憋屈。
+- **现在（v1.7.0）**：服务器会正常打印日志到**标准错误（stderr）**，不再污染 stdio 的 JSON-RPC 通道；`RUST_LOG` 也真正生效了。
+- 新增 `--log-level`（简写 `-v`）参数，可选 `trace` / `debug` / `info` / `warn` / `error`。
+- 不指定时的默认级别按模式门控：`http` / `both` 默认 `warn`（所以默认就能看到「已在 http://127.0.0.1:8082/... 监听」）；`stdio` 默认 `error`（只打印错误，避免干扰 stdout 上的协议）。
+- **优先级**：`RUST_LOG` 环境变量 > `--log-level` 命令行参数 > 模式默认级别。即 `RUST_LOG=debug` 能覆盖 `--log-level info`。
+
+### 4. 已经带了静态 Authorization 的服务器，不再弹 OAuth、不再超时（修 TickTick / dida365）
+
+- **症状**：像 TickTick（mcp.dida365.com）这种本身就要求你在配置里写死 `Authorization: Bearer xxx` 的服务器，旧版本仍会去触发 OAuth 浏览器登录，卡 5 秒后报 `Transport creation timed out`，根本连不上。
+- **原因**：旧代码对 HTTP / SSE 服务器**无条件**走 OAuth 流程，没理会你已经提供的静态鉴权头。
+- **现在**：传输层会和配置里的 `needs_oauth()` 判定保持一致——**只要配置里没有 `oauth_client_id`、且已经带了 `Authorization` 请求头，就直接带着这个头去连接，跳过 OAuth 浏览器流程**。TickTick 这类服务器现在能正常连上了。
+- 只有真正需要 OAuth（配置了 `oauth_client_id`、或既没 client_id 也没 Authorization 头）时，才会弹浏览器登录。
+
+### 5. OAuth 回跳地址 localhost → 127.0.0.1（修 IPv4 / IPv6 不匹配）
+
+- **以前**：OAuth 登录完，服务器把浏览器「回调」到 `http://localhost:<端口>`。有些系统里 `localhost` 会优先解析成 IPv6 的 `::1`，而 dmcp 实际只监听 IPv4 的 `127.0.0.1`，导致回调连不上、登录卡死。
+- **现在**：回跳地址统一用 `http://127.0.0.1:<端口>`，和监听地址一致，IPv4 / IPv6 不匹配的问题消失。
+
+### 6. 配置文件写错了，报错直接告诉你「第几行第几列、哪个字段」
+
+- **以前**：配置 JSON 有语法或字段错误时，报错信息含糊，你得自己猜哪错了。
+- **现在**：错误会精确报出**行号、列号、以及出错的字段路径**，例如 `line 12 column 5, field mcpServers.TickTick.url`——一眼就能定位到是 `TickTick` 这个服务器的 `url` 字段第 12 行第 5 列写错了。
+
 ## 从源码构建
 
 ### Rust 二进制
 
-直接构建 Rust 二进制：
+直接构建 Rust 二进制（需要本机装有 Rust 工具链）：
 
 ```bash
-git clone https://github.com/asyrjasalo/dynamic-mcp.git
+git clone https://github.com/zhangweildlh/dynamic-mcp.git
 cd dynamic-mcp
 cargo build --release
 ```
 
-构建后二进制位于 `./target/release/dmcp`。
+构建后二进制位于 `./target/release/dmcp`（Windows 为 `dmcp.exe`）。
 
-### Python 包
-
-构建 Python 包（wheel）：
-
-```bash
-# 构建 wheel
-uvx maturin build --release
-
-# 本地安装
-pip install target/wheels/dmcp-*.whl
-```
-
-Python 包使用 **maturin** 配合 `bindings = "bin"`，将 Rust 二进制直接编译进 wheel。
+> 注：本 fork 通过 GitHub Actions 在推送 `v*` 标签时自动构建跨平台二进制并发布到 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases)，普通用户**无需自行编译**，直接下载即可。
 
 ## 关于本分支（fork）使用 GitHub Actions 自行构建的说明
 
-> **说明**：上游仓库（asyrjasalo/dynamic-mcp）较长时间未更新。为了不等待上游发版即可使用 v1.6.0 的新功能（含 HTTP 门面），本 fork 通过 **GitHub Actions** 自行构建二进制——具体由 Release 工作流在推送 `v*` 标签时触发。构建产物为跨平台二进制（含 Windows 的 `dmcp.exe`），作为 Release 资产（assets）发布。
+> **说明**：上游仓库（asyrjasalo/dynamic-mcp）较长时间未更新。为了不等待上游发版即可使用 v1.7.0 的新功能（含 HTTP 门面、日志、`--http-endpoint`、静态鉴权跳过 OAuth 等），本 fork 通过 **GitHub Actions** 自行构建二进制——具体由 Release 工作流在推送 `v*` 标签时触发。构建产物为跨平台二进制（含 Windows 的 `dmcp.exe`），作为 Release 资产（assets）发布。
 >
-> 这些构建**不会**发布到 crates.io / PyPI，请直接从本 fork 的 Releases 页面下载二进制使用。
+> 这些构建**不会**发布到 crates.io / PyPI，请直接从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载二进制使用。
 
 ## 故障排查
 
@@ -603,25 +621,29 @@ Python 包使用 **maturin** 配合 `bindings = "bin"`，将 Rust 二进制直�
 - **环境变量**：确保全部 `${VAR}` 引用均已定义
 - **OAuth 服务器**：按提示完成 OAuth 流程
 
-**日志与「控制台没有输出」（重要）：**
+**日志级别（`--log-level` / `-v`，v1.7.0 起）：**
 
-在 **v1.6.0** 中，运行服务器（`--transport http` 或 `both`）时，**控制台默认是空的、没有任何输出**——这不是程序崩溃，而是已知行为：
+服务器模式现在会正常初始化日志系统，控制台不再「永远静默」。
 
-- 日志系统只在 `import` 子命令里初始化，运行服务器时**没有**初始化；因此无论你是否设置 `RUST_LOG`，服务器模式都不会打印任何日志（包括 INFO 级的「已在 xxx 监听」提示都会被抑制）。
-- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → http-path」的 404 提醒）。
+- 新增 `--log-level`（短写 `-v`）参数，可指定控制台日志级别：`trace` / `debug` / `info` / `warn` / `error`。
+- 未指定 `--log-level` 时，按 transport 门控默认级别：
+  - `http` / `both`：默认 `warn`——默认即可看到「已在 http://127.0.0.1:8082/... 监听」提示；
+  - `stdio`：默认 `error`——仅打印错误，避免污染 stdout 上的 JSON-RPC 协议。
+- 级别优先级：**`RUST_LOG` 环境变量 > `--log-level` 命令行参数 > transport 默认级别**。即 `RUST_LOG=debug` 仍可覆盖 `--log-level info`。
 
-> ⚠️ **别被空控制台骗了**：看到 CMD 里一行都没有，以为没启动成功——其实它正安静地监听在 `127.0.0.1:8082`。「监听成功」那行日志只是被屏蔽了而已。
+> 历史说明：v1.6.0 的服务器模式从未初始化日志系统，无论是否设置 `RUST_LOG` 都无任何输出；当时只能靠「浏览器返回 404 而非无法连接」来判断是否在运行（见上方 `--http-endpoint` 的 404 提醒）。v1.7.0 已修复。
 
-**v1.6.1 将修复**：新增 `--log-level` / `-v` 参数，允许用户指定控制台日志级别（`info` / `warn` / `error` 等）；并且 `http` / `both` 模式默认输出 `warn` 级日志、`stdio` 模式默认输出 `error` 级日志，同时修掉「设了 `RUST_LOG` 却无效」的问题。
-
-**想现在就看到更详细日志？** 用 Windows CMD 的正确写法（v1.6.1 起正式生效；当前 v1.6.0 的服务器模式暂不读取 `RUST_LOG`）：
+**想看更详细日志？** Windows CMD 写法：
 
 ```cmd
+:: 用 -v 指定级别
+dmcp.exe -v info --transport http D:\path\to\config.json
+:: 或沿用 RUST_LOG 环境变量（同样生效）
 set RUST_LOG=info
 dmcp.exe --transport http D:\path\to\config.json
 ```
 
-（注：上面是 CMD 语法；bash / Linux / macOS 下写成 `RUST_LOG=info dmcp ...`。）
+（注：上面是 CMD 语法；bash / Linux / macOS 下写成 `dmcp -v info --transport http config.json`，或 `RUST_LOG=info dmcp --transport http config.json`。）
 
 ### OAuth 认证问题
 
