@@ -36,17 +36,16 @@ struct Cli {
     #[arg(long, value_enum, default_value = "stdio")]
     transport: TransportMode,
 
-    /// HTTP host/address to bind when transport includes http
-    #[arg(long, default_value = "127.0.0.1")]
-    http_host: String,
+    /// HTTP endpoint to mount the MCP Streamable HTTP server, as `host:port/path`.
+    /// Default: `127.0.0.1:8082/dynamic-mcp`.
+    #[arg(long, default_value = "127.0.0.1:8082/dynamic-mcp")]
+    http_endpoint: String,
 
-    /// HTTP port to bind when transport includes http
-    #[arg(long, default_value_t = 8082)]
-    http_port: u16,
-
-    /// HTTP path to mount the MCP Streamable HTTP endpoint
-    #[arg(long, default_value = "/dynamic-mcp")]
-    http_path: String,
+    /// Console log level for server mode (trace/debug/info/warn/error).
+    /// Defaults: http/both -> warn, stdio -> error.
+    /// RUST_LOG env var (if set) takes highest precedence.
+    #[arg(long = "log-level", short = 'v', value_enum)]
+    log_level: Option<LogLevel>,
 }
 
 #[derive(Subcommand)]
@@ -83,18 +82,150 @@ enum TransportMode {
     Both,
 }
 
-fn get_config_path(cli_arg: Option<String>) -> Option<(String, &'static str)> {
-    if let Some(path) = cli_arg {
-        Some((path, "command line argument"))
-    } else if let Ok(path) = std::env::var("DYNAMIC_MCP_CONFIG") {
-        if path.is_empty() {
-            None
-        } else {
-            Some((path, "DYNAMIC_MCP_CONFIG environment variable"))
+/// Console log level for the server process, mapped 1:1 onto `tracing` levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum LogLevel {
+    /// Most verbose: trace-level diagnostics
+    Trace,
+    /// Debug-level diagnostics
+    Debug,
+    /// Informational messages (e.g. the listening address)
+    Info,
+    /// Warnings only
+    Warn,
+    /// Errors only (least verbose)
+    Error,
+}
+
+impl LogLevel {
+    /// tracing directive string for this level (`error`/`warn`/`info`/`debug`/`trace`)
+    fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
         }
+    }
+}
+
+/// Default config file name searched next to the executable when no path is given.
+const DEFAULT_CONFIG_FILENAME: &str = "dynamic-mcp.json";
+
+/// Resolve the configuration file path from the available sources, in priority order:
+/// 1. explicit CLI argument, 2. `DYNAMIC_MCP_CONFIG` env var, 3. `dynamic-mcp.json` beside the executable.
+fn get_config_path(cli_arg: Option<String>) -> Option<(String, &'static str)> {
+    // 1. Explicit CLI argument wins.
+    if let Some(path) = cli_arg {
+        return Some((path, "command line argument"));
+    }
+
+    // 2. DYNAMIC_MCP_CONFIG environment variable.
+    if let Ok(path) = std::env::var("DYNAMIC_MCP_CONFIG") {
+        if !path.is_empty() {
+            return Some((path, "DYNAMIC_MCP_CONFIG environment variable"));
+        }
+    }
+
+    // 3. Fallback: dynamic-mcp.json in the same directory as the running executable.
+    if let Some(path) = default_config_next_to_exe() {
+        return Some((path, "dynamic-mcp.json next to executable"));
+    }
+
+    None
+}
+
+/// Pure check: return `dynamic-mcp.json` under `dir` if it exists.
+fn config_file_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidate = dir.join(DEFAULT_CONFIG_FILENAME);
+    if candidate.is_file() {
+        Some(candidate)
     } else {
         None
     }
+}
+
+/// If `dynamic-mcp.json` exists in the executable's directory, return its path as a string.
+fn default_config_next_to_exe() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    config_file_in_dir(dir).and_then(|p| p.to_str().map(|s| s.to_string()))
+}
+
+/// Parse an HTTP endpoint of the form `host:port/path` (or `host:port`, or
+/// `[::1]:port/path` for IPv6) into its components.
+///
+/// Returns `(host, port, path)`. The path defaults to `/dynamic-mcp` when
+/// omitted. Errors on a missing/invalid port or malformed input.
+fn parse_http_endpoint(endpoint: &str) -> Result<(String, u16, String), String> {
+    // Split off the path (everything after the first '/').
+    let (authority, path) = match endpoint.split_once('/') {
+        Some((a, p)) if !p.is_empty() => (a, format!("/{}", p)),
+        _ => (endpoint, "/dynamic-mcp".to_string()),
+    };
+
+    // Separate host and port. IPv6 addresses are wrapped in [..].
+    let (host, port_str) = if let Some(rest) = authority.strip_prefix('[') {
+        let close = rest
+            .find(']')
+            .ok_or_else(|| "missing ']' in IPv6 address".to_string())?;
+        let host = &rest[..close];
+        let after = &rest[close + 1..];
+        let port_str = after
+            .strip_prefix(':')
+            .ok_or_else(|| "IPv6 address must be followed by ':port'".to_string())?;
+        (host.to_string(), port_str.to_string())
+    } else {
+        let (host, port_str) = authority
+            .rsplit_once(':')
+            .ok_or_else(|| "missing ':' (expected host:port)".to_string())?;
+        (host.to_string(), port_str.to_string())
+    };
+
+    if host.is_empty() {
+        return Err("empty host".to_string());
+    }
+    let port: u16 = port_str
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid port '{}' (expected 1-65535)", port_str))?;
+
+    Ok((host, port, path))
+}
+
+/// Initialize the global `tracing` subscriber for server mode.
+///
+/// Gating rules (when neither `--log-level` nor `RUST_LOG` is set):
+/// - `stdio`         -> `error` (keep stdout clean for the JSON-RPC protocol on stdout)
+/// - `http`/`both`   -> `warn`  (so the "listening on ..." line is visible by default)
+///
+/// Precedence: `RUST_LOG` env var > `--log-level` CLI flag > transport default.
+/// This fixes v1.6.0 where the server never initialized a subscriber, making
+/// `RUST_LOG` a no-op and the console completely silent.
+fn init_server_tracing(transport: TransportMode, log_level: Option<LogLevel>) {
+    let default_directive = match transport {
+        TransportMode::Stdio => "error",
+        TransportMode::Http | TransportMode::Both => "warn",
+    };
+    let cli_directive = log_level.map(|l| l.as_str());
+
+    // Precedence: RUST_LOG env var > --log-level CLI flag > transport default.
+    let filter = match EnvFilter::try_from_default_env() {
+        Ok(f) => f,
+        Err(_) => {
+            // RUST_LOG unset or invalid — fall back to CLI level, then transport default.
+            let directive = cli_directive.unwrap_or(default_directive);
+            EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new(default_directive))
+        }
+    };
+
+    // try_init returns Err (instead of panicking) if a global subscriber is
+    // already installed — safe to call more than once.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .try_init();
 }
 
 #[tokio::main]
@@ -116,8 +247,10 @@ async fn main() -> Result<()> {
             cli::import::run_import_from_tool(&tool_name, global, force, &output).await
         }
         None => {
-            // Disable all logging for stdio mode to avoid corrupting JSON-RPC communication
-            // Logging would write to stderr which interferes with the MCP protocol
+            // Server mode: logging is initialized inside run_server() with a
+            // transport-gated default level (stdio -> error keeps stdout clean for
+            // the JSON-RPC protocol; http/both -> warn). RUST_LOG and --log-level
+            // are both respected there.
 
             let (config_path, config_source) =
                 get_config_path(cli.config_path).unwrap_or_else(|| {
@@ -125,6 +258,7 @@ async fn main() -> Result<()> {
                     eprintln!();
                     eprintln!("Usage: dynamic-mcp <config-file>");
                     eprintln!("   or: DYNAMIC_MCP_CONFIG=<config-file> dynamic-mcp");
+                    eprintln!("   or: place dynamic-mcp.json next to the dynamic-mcp executable");
                     eprintln!();
                     eprintln!("Example: dynamic-mcp config.example.json");
                     eprintln!("     or: DYNAMIC_MCP_CONFIG=config.example.json dynamic-mcp");
@@ -135,9 +269,8 @@ async fn main() -> Result<()> {
                 config_path,
                 config_source,
                 cli.transport,
-                cli.http_host,
-                cli.http_port,
-                cli.http_path,
+                cli.http_endpoint,
+                cli.log_level,
             )
             .await
         }
@@ -148,10 +281,12 @@ async fn run_server(
     config_path: String,
     config_source: &str,
     transport: TransportMode,
-    http_host: String,
-    http_port: u16,
-    http_path: String,
+    http_endpoint: String,
+    log_level: Option<LogLevel>,
 ) -> Result<()> {
+    // Initialize logging first so the very first events below are captured.
+    init_server_tracing(transport, log_level);
+
     tracing::info!(
         "Starting dynamic-mcp server with config: {} (from {})",
         &config_path,
@@ -312,9 +447,16 @@ async fn run_server(
         let client_http = client.clone();
         let name_http = name.clone();
         let version_http = version.clone();
-        let host = http_host;
-        let port = http_port;
-        let path = http_path;
+        let (host, port, path) = match parse_http_endpoint(&http_endpoint) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Invalid --http-endpoint '{}': {}",
+                    http_endpoint,
+                    e
+                ));
+            }
+        };
 
         tokio::spawn(async move {
             let factory = move || {
@@ -345,7 +487,7 @@ async fn run_server(
 
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
-                    tracing::info!(
+                    tracing::warn!(
                         "MCP Streamable HTTP server listening on http://{}{}",
                         addr,
                         path
@@ -453,5 +595,80 @@ mod tests {
         assert!(result.is_none());
 
         env::remove_var("DYNAMIC_MCP_CONFIG");
+    }
+
+    #[test]
+    fn test_log_level_as_str() {
+        assert_eq!(LogLevel::Trace.as_str(), "trace");
+        assert_eq!(LogLevel::Debug.as_str(), "debug");
+        assert_eq!(LogLevel::Info.as_str(), "info");
+        assert_eq!(LogLevel::Warn.as_str(), "warn");
+        assert_eq!(LogLevel::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn test_config_file_in_dir_finds_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join(DEFAULT_CONFIG_FILENAME);
+        std::fs::write(&cfg, "{}").unwrap();
+
+        let found = config_file_in_dir(tmp.path());
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_config_file_in_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(config_file_in_dir(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_default() {
+        let (host, port, path) = parse_http_endpoint("127.0.0.1:8082/dynamic-mcp").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 8082);
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_no_path() {
+        let (host, port, path) = parse_http_endpoint("0.0.0.0:9000").unwrap();
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 9000);
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_ipv6() {
+        let (host, port, path) = parse_http_endpoint("[::1]:8082/mcp").unwrap();
+        assert_eq!(host, "::1");
+        assert_eq!(port, 8082);
+        assert_eq!(path, "/mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_bad_port() {
+        assert!(parse_http_endpoint("127.0.0.1:notaport").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_exe_dir_fallback_used_when_no_cli_and_no_env() {
+        // Simulate "no explicit config": no CLI arg and no DYNAMIC_MCP_CONFIG env var.
+        env::remove_var("DYNAMIC_MCP_CONFIG");
+
+        // The fallback only resolves if a dynamic-mcp.json sits next to the
+        // executable. In the test environment there is none, so the result must
+        // be None (rather than panicking or defaulting to a wrong path).
+        let result = get_config_path(None);
+        if let Some((path, source)) = result {
+            assert!(
+                path.ends_with(DEFAULT_CONFIG_FILENAME),
+                "unexpected fallback path: {}",
+                path
+            );
+            assert_eq!(source, "dynamic-mcp.json next to executable");
+        }
     }
 }

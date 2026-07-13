@@ -1,8 +1,65 @@
 use crate::config::env_sub::substitute_in_config;
 use crate::config::schema::ServerConfig;
 use anyhow::{Context, Result};
+use serde_path_to_error;
 use std::path::Path;
 use tokio::fs;
+
+/// Build a user-friendly configuration error that always reports the exact
+/// source location (line + column) and, when available, the JSON path
+/// (e.g. `mcpServers.TickTick.url`) of the offending field.
+fn config_parse_error(e: &serde_json::Error, path: Option<&str>) -> anyhow::Error {
+    let line = e.line();
+    let column = e.column();
+    let error_msg = e.to_string();
+    let location = match path {
+        Some(p) if !p.is_empty() => {
+            format!(" (at field `{}`, line {}, column {})", p, line, column)
+        }
+        _ => format!(" (at line {}, column {})", line, column),
+    };
+    if error_msg.contains("missing field") && error_msg.contains("description") {
+        anyhow::anyhow!(
+            "❌ Configuration Error: Server missing 'description' field{}\n\n\
+                     All MCP servers in your config must have a 'description' field.\n\
+                     The 'description' explains what the server does to the LLM.\n\n\
+                     Example:\n  \
+                     {{\n    \
+                     \"description\": \"File system access for reading and writing files\",\n    \
+                     \"command\": \"npx\",\n    \
+                     \"args\": [\"@modelcontextprotocol/server-filesystem\"]\n  \
+                     }}\n\n\
+                     Error details: {}",
+            location,
+            error_msg
+        )
+    } else if error_msg.contains("missing field") {
+        let field = if let Some(start) = error_msg.find("`") {
+            if let Some(end) = error_msg[start + 1..].find("`") {
+                error_msg[start + 1..start + 1 + end].to_string()
+            } else {
+                "unknown".to_string()
+            }
+        } else {
+            "unknown".to_string()
+        };
+        anyhow::anyhow!(
+            "❌ Configuration Error: Missing required field '{}{}'\n\n\
+                     Check your config file for incomplete server definitions.\n\n\
+                     Error details: {}",
+            field,
+            location,
+            error_msg
+        )
+    } else {
+        anyhow::anyhow!(
+            "❌ Configuration Error: Invalid config format{}\n\n\
+                     Error details: {}",
+            location,
+            error_msg
+        )
+    }
+}
 
 pub async fn load_config(path: &str) -> Result<ServerConfig> {
     let absolute_path = Path::new(path)
@@ -13,47 +70,18 @@ pub async fn load_config(path: &str) -> Result<ServerConfig> {
         .await
         .with_context(|| format!("Failed to read config file: {:?}", absolute_path))?;
 
-    let mut config: ServerConfig = serde_json::from_str(&content).map_err(|e| {
-        let error_msg = e.to_string();
-        if error_msg.contains("missing field") && error_msg.contains("description") {
-            anyhow::anyhow!(
-                "❌ Configuration Error: Server missing 'description' field\n\n\
-                     All MCP servers in your config must have a 'description' field.\n\
-                     The 'description' explains what the server does to the LLM.\n\n\
-                     Example:\n  \
-                     {{\n    \
-                     \"description\": \"File system access for reading and writing files\",\n    \
-                     \"command\": \"npx\",\n    \
-                     \"args\": [\"@modelcontextprotocol/server-filesystem\"]\n  \
-                     }}\n\n\
-                     Error details: {}",
-                error_msg
-            )
-        } else if error_msg.contains("missing field") {
-            let field = if let Some(start) = error_msg.find("`") {
-                if let Some(end) = error_msg[start + 1..].find("`") {
-                    error_msg[start + 1..start + 1 + end].to_string()
-                } else {
-                    "unknown".to_string()
-                }
-            } else {
-                "unknown".to_string()
-            };
-            anyhow::anyhow!(
-                "❌ Configuration Error: Missing required field '{}'.\n\n\
-                     Check your config file for incomplete server definitions.\n\n\
-                     Error details: {}",
-                field,
-                error_msg
-            )
-        } else {
-            anyhow::anyhow!(
-                "❌ Configuration Error: Invalid config format\n\n\
-                     Error details: {}",
-                error_msg
-            )
-        }
-    })?;
+    // Parse into an intermediate `Value` first so a JSON *syntax* error
+    // (which already carries line/column) is reported cleanly. Then run
+    // the typed deserialization through `serde_path_to_error` so any
+    // *schema* error is attributed to the exact field path.
+    let root: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| config_parse_error(&e, None))?;
+
+    // `&Value` implements `Deserializer`, so we borrow `root` here instead of
+    // moving it into `deserialize` (a bare `Value` does *not* implement
+    // `Deserializer`, which would fail to compile).
+    let mut config: ServerConfig = serde_path_to_error::deserialize(&root)
+        .map_err(|e| config_parse_error(e.inner(), Some(&e.path().to_string())))?;
 
     config.mcp_servers = config
         .mcp_servers

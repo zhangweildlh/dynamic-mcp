@@ -576,6 +576,17 @@ impl Transport {
             } => {
                 let mut final_headers = headers.clone().unwrap_or_default();
 
+                // Skip the OAuth browser flow when no OAuth is actually required
+                // (e.g. a static `Authorization` header is already configured, or it's
+                // a stdio server). This mirrors `McpServerConfig::needs_oauth()` so the
+                // transport layer and the connection timeout logic stay in sync, and
+                // fixes the regression where a static Bearer token (e.g. TickTick /
+                // dida365) still triggered a 5s OAuth timeout.
+                if !config.needs_oauth() {
+                    let transport = HttpTransport::new(url, Some(&final_headers)).await?;
+                    return Ok(Transport::Http(transport));
+                }
+
                 // Attempt OAuth: with explicit client_id, or via dynamic registration
                 let oauth_client = OAuthClient::new()?;
                 match oauth_client
@@ -619,6 +630,13 @@ impl Transport {
                 ..
             } => {
                 let mut final_headers = headers.clone().unwrap_or_default();
+
+                // Skip the OAuth browser flow when no OAuth is actually required
+                // (mirrors `McpServerConfig::needs_oauth()`; see the HTTP arm above).
+                if !config.needs_oauth() {
+                    let transport = SseTransport::new(url, Some(&final_headers)).await?;
+                    return Ok(Transport::Sse(transport));
+                }
 
                 // Attempt OAuth: with explicit client_id, or via dynamic registration
                 let oauth_client = OAuthClient::new()?;

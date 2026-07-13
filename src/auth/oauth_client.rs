@@ -323,7 +323,7 @@ impl OAuthClient {
             .context("Failed to bind callback server")?;
 
         let port = listener.local_addr()?.port();
-        let redirect_url = RedirectUrl::new(format!("http://localhost:{}{}", port, CALLBACK_PATH))
+        let redirect_url = RedirectUrl::new(format!("http://127.0.0.1:{}{}", port, CALLBACK_PATH))
             .context("Failed to create redirect URL")?;
 
         tracing::debug!("Callback server listening on port {}", port);
@@ -404,7 +404,7 @@ mod tests {
         assert!(result.is_ok());
 
         let (_listener, redirect_url) = result.unwrap();
-        assert!(redirect_url.as_str().starts_with("http://localhost:"));
+        assert!(redirect_url.as_str().starts_with("http://127.0.0.1:"));
         assert!(redirect_url.as_str().ends_with("/oauth/callback"));
     }
 

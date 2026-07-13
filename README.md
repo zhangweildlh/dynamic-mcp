@@ -495,9 +495,8 @@ v1.6.0 起，`--transport` 决定 dynamic-mcp 以哪种方式对外服务。三�
 | 参数            | 默认值          | 说明（人话）                                      |
 | --------------- | --------------- | ------------------------------------------------- |
 | `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
-| `--http-host`   | `127.0.0.1`     | HTTP 对外窗口「绑在哪台机器」。默认 `127.0.0.1` = 只有你本机连得上（最安全）。一般别改；想让同局域网/其他设备也能连才改（有安全风险）。 |
-| `--http-port`   | `8082`          | 对外窗口的「门牌号」。默认 8082；若被别的程序占用就换一个（如 9000）。 |
-| `--http-path`   | `/dynamic-mcp`  | 窗口上的「房间名」。客户端连接时填的地址末尾要和它对上，例如 `http://127.0.0.1:8082/dynamic-mcp`。 |
+| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | HTTP 对外窗口的「主机:端口/路径」合一设置。默认本机 `127.0.0.1:8082/dynamic-mcp`（最安全，仅本机可连）。想让同局域网/其他设备也能连就改成 `0.0.0.0:8082/dynamic-mcp`（有安全风险）；端口被占用就换（如 `:9000`）；客户端连接地址末尾的 `/dynamic-mcp` 要和它一致。 |
+| `--log-level`   | （按模式门控）   | 控制台日志级别：`trace`/`debug`/`info`/`warn`/`error`。默认按模式：http/both=`warn`、stdio=`error`；`RUST_LOG` 优先级最高。简写 `-v`。 |
 
 ### 使用方法
 
@@ -509,20 +508,22 @@ dmcp --transport http /path/to/dynamic-mcp.json
 dmcp --transport both /path/to/dynamic-mcp.json
 
 # 绑定到所有网卡，自定义端口与路径：
-dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /path/to/dynamic-mcp.json
+dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 ```
 
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
 
 > 💡 **网页 LLM 里地址到底怎么填（重点）**：
-> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-path` 的值，**前后都不要再加减 `/mcp`**。
-> - 例如你用 `--http-path /dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
+> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `/` 之后的部分，**前后都不要再加减 `/mcp`**。
+> - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
-> - 启动后控制台若毫无输出也别慌：v1.6.0 服务器模式默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。
+> - 启动后控制台若毫无输出：stdio 模式默认只打 `error` 级（安静是正常的）；http/both 模式默认打 `warn` 级，应能看到「已在 … 监听」。只要浏览器不是报「无法连接」，就说明它正在监听（详见下方「故障排查 → 日志」）。
 
 ### 配置文件（无需改动）
 
-v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
+v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema；v1.7.0 也未改动。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
+
+> **配置文件去哪找（v1.7.0 起）**：优先级为 ①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③**`dmcp.exe` 同目录下的 `dynamic-mcp.json`**。前两者都没给时，会自动在可执行文件所在目录找 `dynamic-mcp.json` 并加载；只有三者都缺失才报错退出。把配置文件和 `dmcp.exe` 放一起、直接 `dmcp` 即可启动，无需写路径。
 
 示例 `dynamic-mcp.json`（保持不变）：
 
@@ -603,25 +604,29 @@ Python 包使用 **maturin** 配合 `bindings = "bin"`，将 Rust 二进制直�
 - **环境变量**：确保全部 `${VAR}` 引用均已定义
 - **OAuth 服务器**：按提示完成 OAuth 流程
 
-**日志与「控制台没有输出」（重要）：**
+**日志级别（`--log-level` / `-v`，v1.7.0 起）：**
 
-在 **v1.6.0** 中，运行服务器（`--transport http` 或 `both`）时，**控制台默认是空的、没有任何输出**——这不是程序崩溃，而是已知行为：
+服务器模式现在会正常初始化日志系统，控制台不再「永远静默」。
 
-- 日志系统只在 `import` 子命令里初始化，运行服务器时**没有**初始化；因此无论你是否设置 `RUST_LOG`，服务器模式都不会打印任何日志（包括 INFO 级的「已在 xxx 监听」提示都会被抑制）。
-- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → http-path」的 404 提醒）。
+- 新增 `--log-level`（短写 `-v`）参数，可指定控制台日志级别：`trace` / `debug` / `info` / `warn` / `error`。
+- 未指定 `--log-level` 时，按 transport 门控默认级别：
+  - `http` / `both`：默认 `warn`——默认即可看到「已在 http://127.0.0.1:8082/... 监听」提示；
+  - `stdio`：默认 `error`——仅打印错误，避免污染 stdout 上的 JSON-RPC 协议。
+- 级别优先级：**`RUST_LOG` 环境变量 > `--log-level` 命令行参数 > transport 默认级别**。即 `RUST_LOG=debug` 仍可覆盖 `--log-level info`。
 
-> ⚠️ **别被空控制台骗了**：看到 CMD 里一行都没有，以为没启动成功——其实它正安静地监听在 `127.0.0.1:8082`。「监听成功」那行日志只是被屏蔽了而已。
+> 历史说明：v1.6.0 的服务器模式从未初始化日志系统，无论是否设置 `RUST_LOG` 都无任何输出；当时只能靠「浏览器返回 404 而非无法连接」来判断是否在运行（见上方 http-path 的 404 提醒）。v1.7.0 已修复。
 
-**v1.6.1 将修复**：新增 `--log-level` / `-v` 参数，允许用户指定控制台日志级别（`info` / `warn` / `error` 等）；并且 `http` / `both` 模式默认输出 `warn` 级日志、`stdio` 模式默认输出 `error` 级日志，同时修掉「设了 `RUST_LOG` 却无效」的问题。
-
-**想现在就看到更详细日志？** 用 Windows CMD 的正确写法（v1.6.1 起正式生效；当前 v1.6.0 的服务器模式暂不读取 `RUST_LOG`）：
+**想看更详细日志？** Windows CMD 写法：
 
 ```cmd
+:: 用 -v 指定级别
+dmcp.exe -v info --transport http D:\path\to\config.json
+:: 或沿用 RUST_LOG 环境变量（同样生效）
 set RUST_LOG=info
 dmcp.exe --transport http D:\path\to\config.json
 ```
 
-（注：上面是 CMD 语法；bash / Linux / macOS 下写成 `RUST_LOG=info dmcp ...`。）
+（注：上面是 CMD 语法；bash / Linux / macOS 下写成 `dmcp -v info --transport http config.json`，或 `RUST_LOG=info dmcp --transport http config.json`。）
 
 ### OAuth 认证问题
 
