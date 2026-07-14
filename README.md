@@ -1,6 +1,8 @@
-# dynamic-mcp
+# Dynamic MCP
 
 > 一句话：它是个「工具中转站」——把你散落各处的 AI 工具收拢到一处，让 AI 助手用起来更省、更方便。
+
+---
 
 ## 三分钟看懂：它到底是什么、怎么用（给不懂电脑的人）
 
@@ -9,11 +11,13 @@
 ### 一、它帮你解决两个麻烦
 
 **麻烦 1：工具太多，AI 助手记不过来，还费钱**
-AI 助手（比如 Claude、GPT）自己不会干活，得借用你准备好的各种「工具」——查资料、读文件、算数据……如果你有 20 个工具，全摆到助手面前，它得把每个工具说明都记在「工作桌面」上。桌面塞满，助手反应慢，而且每说一句话都要多花钱。
+
+AI 助手（比如 Claude、GPT）自己不会干活，得借用你准备好的各种「工具」——查资料、读文件、算数据……如果你有 60 个工具，全摆到助手面前，它得把每个工具说明都记在「工作桌面」上。桌面塞满，助手反应慢，而且每说一句话都要多花钱。
 
 dynamic-mcp 的聪明做法：**一开始只给助手看一张写着 3 个选项的「菜单」**（列分组、看分组里有什么、调用某个工具）。助手真要用某个工具时，才临时把说明「调」出来。这样桌面始终干净，又省事又省钱。
 
 **麻烦 2：助手够不着你电脑里的工具**
+
 很多好用的工具只能「放在你电脑里、站你旁边才能用」。但助手如果在浏览器里、手机上、云端的另一台机器上，就「走不过去」拿。
 
 dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也能打的**（技术名词叫「把本地 stdio 桥接成 Streamable HTTP」）。接好后，远处的助手打一个「电话」（连上网络地址）就能用你电脑里的工具了。
@@ -23,7 +27,7 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 把软件想成一间「工具房」，它可以开不同数量的门：
 
 | 开门方式 | 家门口那扇门（给站你电脑旁的助手） | 对外窗口（给浏览器/手机/云端的助手） | 适合谁 |
-|---|---|---|---|
+| ------ | ------ | ------ | ------ |
 | 模式一 stdio | 开 | 关 | 只给你电脑上装的 AI 软件用 |
 | 模式二 http | 关 | 开 | 只给浏览器/手机/云端的助手用 |
 | 模式三 both | 开 | 开 | 两边同时用 |
@@ -34,13 +38,16 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 模式三就是「一间房、两扇门、一套工具」，最大的好处是**一个程序顶两个用**：
 
-1. **只开一个程序，两处都能用**：你电脑上的 AI 软件（Claude Desktop / Cursor / VS Code）走「家门口那扇门」（stdio），浏览器、手机、云端的 AI 助手走「对外窗口」（HTTP）——**一份程序同时服务两类助手**，不用开两个 dmcp。
+1. **只开一个程序，两处都能用**：你电脑上的 AI 软件（WorkBuddy / Claude Desktop / Cursor / VS Code）走「家门口那扇门」（stdio），浏览器、手机、云端的 AI 助手走「对外窗口」（HTTP）——**一份程序同时服务两类助手**，不用开两个 dmcp。
 2. **共享同一份工具连接和配置**：两种开门方式共用同一套上游工具和同一份配置文件，不需要维护两套 dmcp、连两次上游，省内存、省资源，配置只写一份，改一次两端同时生效。
 3. **省心省力**：没有模式三的话，你要开两个程序——一个给桌面软件（stdio）、一个给浏览器（http），双倍连接、双倍内存、配置维护两处；有了模式三，这些都免了。
 
-> ⚠️ **模式三该由谁来打开（很重要）**：应该**让你电脑上的 AI 软件（Claude Desktop / Cursor / VS Code）来帮你打开**，不要你自己手动点开。
+> ⚠️ **模式三该由谁来打开（很重要）**：应该**让你电脑上的 AI 软件（WorkBuddy / Claude Desktop / Cursor / VS Code）来帮你打开**，不要你自己手动点开。
+>
 > 原因：这间房「亮不亮灯」取决于「家门口那扇门有没有助手进来」。AI 软件把 dmcp 打开时，等于推开了家门口的门、站在房子里——房子通电，对外窗口也自然开了，浏览器里的助手就能从窗口进来。
+>
 > 如果你自己手动点开：家门口的门开了却没人用（浪费），你的 AI 软件还是用不了它，只能再去另开一个 → 又变两个程序，模式三的好处没了。
+>
 > 正确做法：在你的 AI 软件设置里写「用 both 方式打开 dmcp」，剩下的它自己会做。
 
 > 💡 **小提醒**：房子亮灯靠「家门口那个助手在不在」。你关掉电脑上的 AI 软件，dmcp 会被关掉，对外窗口也关了——浏览器里的助手立刻用不了。如果你希望「哪怕电脑 AI 软件关了，浏览器助手照样能用」，就把模式三拆成两个独立程序：一个专门对外常亮的（模式二 http，你手动开着），一个给电脑 AI 软件自用的（模式一或模式三，由软件自己打开）。
@@ -48,6 +55,7 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 ### 四、一个参数怎么选（给想动手的人）
 
 决定「开几扇门」的，是一个叫 `--transport` 的开关：
+
 - 写 `stdio` → 只开家门口的门（给桌面 AI 软件）
 - 写 `http` → 只开对外窗口（给浏览器/手机/云端）
 - 写 `both` → 两扇门都开（让 AI 软件帮你打开）
@@ -56,13 +64,13 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 ---
 
-下面是给开发者看的完整技术说明（看不懂不影响上面的大意）。
+下面是给开发者看的完整技术说明。
 
 ## 快速开始
 
 ### 安装
 
-> 💡 **推荐下载二进制使用**：本仓库（fork）不发布到 PyPI / crates.io，请从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载对应操作系统的二进制（`dmcp` / `dmcp.exe`），放入 `PATH` 即可，无需自行编译。
+> 💡 **推荐下载二进制使用**：本仓库（fork）不发布到 PyPI / [crates.io](http://crates.io)，请从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载对应操作系统的二进制（`dmcp` / `dmcp.exe`），放入 `PATH` 即可，无需自行编译。
 
 #### 方式一：下载原生二进制（推荐）
 
@@ -82,7 +90,7 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 #### 方式二：从源码自行编译（进阶）
 
-需要本机装有 Rust 工具链。步骤见文末「[从源码构建](#从源码构建)」。
+需要本机装有 Rust 工具链。步骤见文末「[从源码构建](#%E4%BB%8E%E6%BA%90%E7%A0%81%E6%9E%84%E5%BB%BA)」。
 
 ```bash
 git clone https://github.com/zhangweildlh/dynamic-mcp.git
@@ -90,6 +98,10 @@ cd dynamic-mcp
 cargo build --release
 # 构建后二进制位于 ./target/release/dmcp（Windows 为 dmcp.exe）
 ```
+
+---
+
+## Dynamic MCP 配置文件格式
 
 ### 从 AI 编码工具导入
 
@@ -187,9 +199,9 @@ Config details:
 
 - **Cursor**：同时支持 `.cursor/mcp.json`（项目级）与 `~/.cursor/mcp.json`（全局级）
 - **Claude Desktop**：仅全局配置，位置因系统而异：
-  - macOS：`~/Library/Application Support/Claude/claude_desktop_config.json`
-  - Windows：`%APPDATA%\Claude\claude_desktop_config.json`
-  - Linux：`~/.config/Claude/claude_desktop_config.json`
+- macOS：`~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows：`%APPDATA%\Claude\claude_desktop_config.json`
+- Linux：`~/.config/Claude/claude_desktop_config.json`
 - **Claude Code CLI**：同时支持 `.mcp.json`（项目根目录）与 `~/.claude.json`（用户 / 全局级）
 - **Gemini CLI**：同时支持 `.gemini/settings.json`（项目级）与 `~/.gemini/settings.json`（全局级）
 - **VS Code**：同时支持 `.vscode/mcp.json`（项目级）与用户级配置（各系统路径不同）
@@ -201,21 +213,20 @@ Config details:
 
 导入命令会自动把环境变量规范化为 dynamic-mcp 的 `${VAR}` 格式：
 
-| 工具            | 原格式                 | 转换后             |
-| --------------- | ---------------------- | ------------------ |
-| Cursor          | `${env:GITHUB_TOKEN}`  | `${GITHUB_TOKEN}`  |
-| Claude Desktop  | `${GITHUB_TOKEN}`      | `${GITHUB_TOKEN}`  |
-| Claude Code CLI | `${GITHUB_TOKEN}`      | `${GITHUB_TOKEN}`  |
-| VS Code         | `${env:GITHUB_TOKEN}`  | `${GITHUB_TOKEN}`  |
-| Codex           | `"${GITHUB_TOKEN}"`    | `${GITHUB_TOKEN}`  |
+| 工具 | 原格式 | 转换后 |
+| ------ | ------ | ------ |
+| Cursor | ${env:GITHUB_TOKEN} | ${GITHUB_TOKEN} |
+| Claude Desktop | ${GITHUB_TOKEN} | ${GITHUB_TOKEN} |
+| Claude Code CLI | ${GITHUB_TOKEN} | ${GITHUB_TOKEN} |
+| VS Code | ${env:GITHUB_TOKEN} | ${GITHUB_TOKEN} |
+| Codex | "${GITHUB_TOKEN}" | ${GITHUB_TOKEN} |
 
 **注意**：VS Code 的 `${input:ID}` 安全提示无法自动转换，导入后需手动配置。
 
 详细的工具专属导入指南见 [docs/IMPORT.md](docs/IMPORT.md)。
 
-## Dynamic MCP 配置格式
 
-### 按需调用上游服务器
+### 按上游 MCP 服务器规范，手动编写
 
 创建一个 `dynamic-mcp.json` 文件，为每个服务器填写 `description` 字段：
 
@@ -418,12 +429,12 @@ Config details:
 
 **支持的时长格式：**
 
-| 格式         | 示例             | 说明                 |
-| ------------ | ---------------- | -------------------- |
-| 秒           | `"30s"`、`"5s"`  | 简单秒数             |
-| 分钟         | `"1min"`、`"2m"` | 分钟（缩写或完整）   |
-| 毫秒         | `"3000ms"`、`"500ms"` | 毫秒           |
-| 纯数字       | `30`             | 秒（纯数字）         |
+| 格式 | 示例 | 说明 |
+| ------ | ------ | ------ |
+| 秒 | "30s"、"5s" | 简单秒数 |
+| 分钟 | "1min"、"2m" | 分钟（缩写或完整） |
+| 毫秒 | "3000ms"、"500ms" | 毫秒 |
+| 纯数字 | 30 | 秒（纯数字） |
 
 **行为：**
 
@@ -432,57 +443,62 @@ Config details:
 - 仅适用于工具 / 资源 / 提示调用操作，不适用于连接或初始化
 - 适用于存在长时间运行操作的服务器（数据库查询、文件处理等）
 
-## v1.6.0 新增：Streamable HTTP 传输
+---
 
-除默认的 stdio 传输外，dynamic-mcp 现在可以把其「分组工具门面（grouped-tool facade）」通过一个**单一的 Streamable HTTP MCP 端点**暴露出来。这让基于 HTTP / SSE 的 MCP 客户端（Web UI、远程智能体、其他 MCP 代理、网关）无需 stdio 即可连接 dynamic-mcp。
+## Dynamic MCP 使用方法
 
-该 HTTP 端点会把所有已配置的上游（stdio）服务器聚合为 3 个工具的门面：
+### 由 AI 自动拉起
 
-- `list_groups` —— 列出所有已配置的分组及其连接状态。
-- `get_dynamic_tools` —— 按需获取某个选定分组的工具 Schema。
-- `call_dynamic_tool` —— 通过代理在选定分组上调用某个工具。
+> **适用于 stdio 模式（默认，`--transport stdio`）和 both 模式（`--transport both`）。**
+> 不适用于 HTTP 模式（`--transport http`）。比如浏览器、云端、手机上的 AI。
 
-### 三种传输模式（stdio / http / both）
+在 WorkBuddy / Claude Desktop / Cursor / VS Code 等桌面客户端的 MCP 配置里写 `"command": "dmcp"`，由客户端自己把 dmcp 启动起来、并接管它的标准输入/输出；进程随客户端启动而生、随客户端退出而灭。**不要在终端里手动运行 `dmcp config.json`**，那样它的标准输入/输出只连着你的终端，没有连接你的 AI 客户端，无法正常使用。
+```
+{
+  "mcpServers": {
+    "Dynamic-mcp": {
+      "command": "D:/Tools/MCP_Bridge/dmcp.exe",
+      "args": [
+        "--transport",
+        "both",
+        "--http-endpoint",
+        "127.0.0.1:8082/dynamic-mcp",
+        "--log-level",
+        "info",
+        "D:/Tools/MCP_Bridge/dynamic-mcp.json"
+      ],
+      "env": {
+        "UV_NO_CACHE": "1"
+      },
+      "description": "Dynamic-MCP代理服务器，按需加载服务组。",
+      "disabled": false
+    }
+  }
+}
+```
 
-v1.6.0 起，`--transport` 决定 dynamic-mcp 以哪种方式对外服务。三种模式**最核心的区别是「由谁启动」**：
+### 手动在终端中启动
 
-#### 模式一 · stdio（默认，`--transport stdio`）
+> **适用于HTTP 模式（`--transport http`）。**
+> 不适用于 stdio 模式（默认，`--transport stdio`）和 both 模式（`--transport both`）。比如 WorkBuddy / Claude Desktop / Cursor / VS Code。
 
-- **是什么**：dynamic-mcp 作为你本机的一个子进程运行，数据通过标准输入/输出（stdio）收发。
-- **由谁启动**：stdio 模式的**正常用法是由 LLM 客户端拉起**——在 Claude Desktop / Cursor / VS Code 等桌面客户端的 MCP 配置里写 `"command": "dmcp"`，由客户端自己把 dmcp 启动起来、并接管它的标准输入/输出；进程随客户端启动而生、随客户端退出而灭。**你当然也可以在终端里手动运行 `dmcp config.json`**，但那样它的标准输入/输出只连着你的终端、没有 LLM 客户端接管，等于没有「对话对象」，无法正常使用——所以 stdio 模式只有被 LLM 客户端拉起才有实际意义。
-- **适用场景**：仅在你本机、使用桌面 AI 客户端时。
-- **限制**：浏览器、云端、手机上的 LLM 没有能力在你电脑上拉起一个本地进程，因此**这些环境用不了 stdio 模式**。
-
-#### 模式二 · HTTP（`--transport http`）
-
-- **是什么**：dynamic-mcp 作为**常驻的 HTTP 服务**运行，对外暴露一个 Streamable HTTP MCP 端点（`http://<host>:<port><path>`），任何能发 HTTP 请求的客户端都能连。
-- **由谁启动**：**只能由你（用户）手动启动，LLM 不能拉起它**。原因——模式二正是为了弥补 stdio 的短板而新增：浏览器、云端、移动端里的 LLM 应用，根本无法在你的机器上 spawn 一个本地子进程；所以必须**先由你自己在终端或服务里把它跑起来、让它一直监听端口**，远端的 LLM 才能连上来。**在模式二中，LLM 只是「连接者」，永远不是「启动者」**。
-- **适用场景**：浏览器插件、云端 Agent、手机 App、远程 / 容器（Docker、k8s）环境，或需要被多个客户端共享同一个后端时。
-- **最小启动命令**：
-
-  ```bash
-  dmcp --transport http /path/to/dynamic-mcp.json
-  ```
-
-#### 模式三 · both（`--transport both`）
-
-- **是什么**：stdio 与 HTTP 同时开启——一个进程，两套入口（对外窗口 + 家门口的门）。
-- **亮点 / 优点**：
-  - **一个程序顶两个用**：桌面 AI 软件走 stdio 门、浏览器/手机/云端助手走 HTTP 窗口，**一份进程同时服务两类客户端**，不用开两个 dmcp。
-  - **共享同一份上游连接和配置**：两种入口共用同一套上游工具与同一份配置文件，省内存、省资源，配置只写一份。
-  - **省心**：没有 `both` 就得开两个程序（一个 stdio 给桌面、一个 http 给浏览器），双倍连接、双倍内存、配置维护两处；`both` 免了这些。
-- **由谁启动（关键）**：**应由你的桌面 AI 软件（Claude Desktop / Cursor / VS Code）拉起**，不要自己手动在终端启动。软件拉起 dmcp 时推开 stdio 门、站在房子里，进程随之常驻，HTTP 窗口也自然开着，浏览器助手即可连入；若手动启动，stdio 门空转、桌面软件用不上，等于白开 `both`。通俗讲解见上方「三分钟看懂」。
-- **适用场景**：本机桌面端「省 token」与浏览器/云端/手机远程使用同一套上游工具，二者同时需要。
+在终端中执行命令
+```bash
+dmcp --transport http /path/to/dynamic-mcp.json
+```
+```Powershell
+dmcp.exe --transport http D:/Tools/MCP_Bridge/dynamic-mcp.json
+```
 
 ### 参数（命令行）
 
-新增的命令行参数用于控制 HTTP 暴露方式（**配置文件无需改动**，见下文）：
+新增的命令行参数用于控制 HTTP 暴露方式：
 
-| 参数            | 默认值          | 说明（人话）                                      |
-| --------------- | --------------- | ------------------------------------------------- |
-| `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
-| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | HTTP 对外窗口的「主机:端口/路径」合一设置。默认本机 `127.0.0.1:8082/dynamic-mcp`（最安全，仅本机可连）。想让同局域网/其他设备也能连就改成 `0.0.0.0:8082/dynamic-mcp`（有安全风险）；端口被占用就换（如 `:9000`）；客户端连接地址末尾的 `/dynamic-mcp` 要和它一致。 |
-| `--log-level`   | （按模式门控）   | 控制台日志级别：`trace`/`debug`/`info`/`warn`/`error`。默认按模式：http/both=`warn`、stdio=`error`；`RUST_LOG` 优先级最高。简写 `-v`。 |
+| 参数 | 默认值 | 说明（人话） |
+| ------ | ------ | ------ |
+| --transport | stdio | 决定开几扇门：stdio 只给桌面 AI 软件用；http 只给浏览器/手机/云端用；both 两者都要（推荐让桌面 AI 软件帮你打开）。 |
+| --http-endpoint | 127.0.0.1:8082/dynamic-mcp | HTTP 对外窗口的「主机:端口/路径」合一设置。默认本机 127.0.0.1:8082/dynamic-mcp（最安全，仅本机可连）。想让同局域网/其他设备也能连就改成 0.0.0.0:8082/dynamic-mcp（有安全风险）；端口被占用就换（如 :9000）；客户端连接地址末尾的 /dynamic-mcp 要和它一致。 |
+| --log-level | （按模式门控） | 控制台日志级别：trace/debug/info/warn/error。默认按模式：http/both=warn、stdio=error；RUST_LOG 优先级最高。简写 -v。 |
 
 ### 使用方法
 
@@ -500,16 +516,17 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
 
 > 💡 **网页 LLM 里地址到底怎么填（重点）**：
+>
+>
 > - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `/` 之后的部分，**前后都不要再加减 `/mcp`**。
-> - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
+> - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（路径可自定义，需与客户端填写的地址末尾一致）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
-> - 启动后控制台若毫无输出：stdio 模式默认只打 `error` 级（安静是正常的）；http/both 模式默认打 `warn` 级，应能看到「已在 … 监听」。只要浏览器不是报「无法连接」，就说明它正在监听（详见下方「故障排查 → 日志」）。
+> - 启动后控制台若毫无输出：stdio 模式默认只打 `error` 级（安静是正常的）；http/both 模式默认打 `warn` 级，应能看到 `MCP Streamable HTTP server listening on http://127.0.0.1:8082/dynamic-mcp`（端点路径是 `/dynamic-mcp`，不是根路径）。只要浏览器不是报「无法连接」，就说明它正在监听（详见下方「故障排查 → 日志」）。
+> - ⚠️ **端口被占用不致命**：`http`/`both` 模式下若 `8082` 已被其他程序占用，只会看到一条 `Failed to bind ... os error 10048`（或类似 bind 失败）的报错，**stdio 门面仍会正常监听**，AI 软件通过 stdio 调用不受影响；想消除该报错就换一个端口（如 `--http-endpoint 127.0.0.1:9000/dynamic-mcp`）或改用 `--transport stdio`。
 
-### 配置文件（无需改动）
+### 配置文件
 
-v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema；v1.7.0 也未改动。你已有的配置原样可用；HTTP 暴露完全由上面的命令行参数控制，沿用同一个 `config-schema.json`。
-
-> **配置文件去哪找（v1.7.0 起）**：优先级为 ①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③**`dmcp.exe` 同目录下的 `dynamic-mcp.json`**。前两者都没给时，会自动在可执行文件所在目录找 `dynamic-mcp.json` 并加载；只有三者都缺失才报错退出。把配置文件和 `dmcp.exe` 放一起、直接 `dmcp` 即可启动，无需写路径。
+> **配置文件去哪找**：优先级为 ①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③**`dmcp.exe` 同目录下的 `dynamic-mcp.json`**。前两者都没给时，会自动在可执行文件所在目录找 `dynamic-mcp.json` 并加载；只有三者都缺失才报错退出。把配置文件和 `dmcp.exe` 放一起、直接 `dmcp` 即可启动，无需写路径。
 
 示例 `dynamic-mcp.json`（保持不变）：
 
@@ -531,6 +548,11 @@ v1.6.0 **没有**修改 `dynamic-mcp.json` 的 Schema；v1.7.0 也未改动。�
 dmcp --transport both /path/to/dynamic-mcp.json
 ```
 
+#### 配置文件写错了，报错直接告诉你「第几行第几列、哪个字段」
+
+- **以前**：配置 JSON 有语法或字段错误时，报错信息含糊，你得自己猜哪错了。
+- **现在**：错误会精确报出**出错的字段路径、行号、列号**，例如 `` `at field `mcpServers.TickTick.url`, line 12, column 5` ``——一眼就能定位到是 `TickTick` 这个服务器的 `url` 字段第 12 行第 5 列写错了。
+
 ### 应用场景
 
 - **远程 / 容器化部署**：在 Docker、k8s、远程虚拟机等无法使用 stdio 的环境。
@@ -539,48 +561,7 @@ dmcp --transport both /path/to/dynamic-mcp.json
 - **级联 MCP 代理**：第二个代理 / 编排器通过 HTTP 连接 dynamic-mcp，而无需拉起子进程。
 - **单端点多分组访问**：一个 HTTP 端点服务所有分组；客户端通过 `get_dynamic_tools` / `call_dynamic_tool` 选择分组。
 
-## v1.7.0 版功能详解（大白话）
-
-下面用大白话把 v1.7.0 相对 v1.6.0 的 6 处改动讲清楚。这些改动**都不需要你改配置文件**（除非你要给配置文件改名），但能让「带鉴权的远程服务器连得上」「日志看得到」「配错了知道错在哪」。
-
-### 1. 配置文件改名了：dmcp_config.json → dynamic-mcp.json
-
-- **以前**：默认配置文件叫 `dmcp_config.json`。
-- **现在**：叫 `dynamic-mcp.json`。这是**破坏性改名**——你原来的 `dmcp_config.json` 不会被自动读取，请把文件重命名一下（内容不用改）。
-- **顺带多了个贴心功能**：如果你不写任何路径，dmcp 会**自动去「程序自己所在的文件夹」里找 `dynamic-mcp.json`**。也就是说，把 `dmcp.exe` 和 `dynamic-mcp.json` 放同一个文件夹，直接运行 `dmcp` 就能启动，不用记路径。
-- 找配置文件的优先级：①命令行第一个位置参数 → ②`DYNAMIC_MCP_CONFIG` 环境变量 → ③程序同目录下的 `dynamic-mcp.json`。三个都没有才报错退出。
-
-### 2. HTTP 设置从「三个开关」合并成「一个地址」
-
-- **以前**：要分别写 `--http-host`、`--http-port`、`--http-path` 三个参数。
-- **现在**：只写一个 `--http-endpoint host:port/path`，例如 `--http-endpoint 127.0.0.1:8082/dynamic-mcp`（这也是默认值）。想让同局域网 / 其他设备访问就改成 `0.0.0.0:8082/dynamic-mcp`；端口被占用就换 `:9000`；路径想自定义就写 `127.0.0.1:8082/你起的名字`，客户端连接地址的末尾要和它一致。
-- 旧的 `--http-host` / `--http-port` / `--http-path` 已**删除**，用了会报错。
-- 支持 IPv6：写成 `--http-endpoint [::1]:8082/dynamic-mcp`（用方括号把 IPv6 地址包起来）。
-
-### 3. 日志终于「有声音」了（--log-level / -v）
-
-- **以前（v1.6.0）**：服务器模式完全不初始化日志，无论你设不设 `RUST_LOG`，控制台都静默；想确认它有没有在运行，只能靠「浏览器返回 404 而不是连不上」来反推，很憋屈。
-- **现在（v1.7.0）**：服务器会正常打印日志到**标准错误（stderr）**，不再污染 stdio 的 JSON-RPC 通道；`RUST_LOG` 也真正生效了。
-- 新增 `--log-level`（简写 `-v`）参数，可选 `trace` / `debug` / `info` / `warn` / `error`。
-- 不指定时的默认级别按模式门控：`http` / `both` 默认 `warn`（所以默认就能看到「已在 http://127.0.0.1:8082/... 监听」）；`stdio` 默认 `error`（只打印错误，避免干扰 stdout 上的协议）。
-- **优先级**：`RUST_LOG` 环境变量 > `--log-level` 命令行参数 > 模式默认级别。即 `RUST_LOG=debug` 能覆盖 `--log-level info`。
-
-### 4. 已经带了静态 Authorization 的服务器，不再弹 OAuth、不再超时（修 TickTick / dida365）
-
-- **症状**：像 TickTick（mcp.dida365.com）这种本身就要求你在配置里写死 `Authorization: Bearer xxx` 的服务器，旧版本仍会去触发 OAuth 浏览器登录，卡 5 秒后报 `Transport creation timed out`，根本连不上。
-- **原因**：旧代码对 HTTP / SSE 服务器**无条件**走 OAuth 流程，没理会你已经提供的静态鉴权头。
-- **现在**：传输层会和配置里的 `needs_oauth()` 判定保持一致——**只要配置里没有 `oauth_client_id`、且已经带了 `Authorization` 请求头，就直接带着这个头去连接，跳过 OAuth 浏览器流程**。TickTick 这类服务器现在能正常连上了。
-- 只有真正需要 OAuth（配置了 `oauth_client_id`、或既没 client_id 也没 Authorization 头）时，才会弹浏览器登录。
-
-### 5. OAuth 回跳地址 localhost → 127.0.0.1（修 IPv4 / IPv6 不匹配）
-
-- **以前**：OAuth 登录完，服务器把浏览器「回调」到 `http://localhost:<端口>`。有些系统里 `localhost` 会优先解析成 IPv6 的 `::1`，而 dmcp 实际只监听 IPv4 的 `127.0.0.1`，导致回调连不上、登录卡死。
-- **现在**：回跳地址统一用 `http://127.0.0.1:<端口>`，和监听地址一致，IPv4 / IPv6 不匹配的问题消失。
-
-### 6. 配置文件写错了，报错直接告诉你「第几行第几列、哪个字段」
-
-- **以前**：配置 JSON 有语法或字段错误时，报错信息含糊，你得自己猜哪错了。
-- **现在**：错误会精确报出**行号、列号、以及出错的字段路径**，例如 `line 12 column 5, field mcpServers.TickTick.url`——一眼就能定位到是 `TickTick` 这个服务器的 `url` 字段第 12 行第 5 列写错了。
+---
 
 ## 从源码构建
 
@@ -602,7 +583,10 @@ cargo build --release
 
 > **说明**：上游仓库（asyrjasalo/dynamic-mcp）较长时间未更新。为了不等待上游发版即可使用 v1.7.0 的新功能（含 HTTP 门面、日志、`--http-endpoint`、静态鉴权跳过 OAuth 等），本 fork 通过 **GitHub Actions** 自行构建二进制——具体由 Release 工作流在推送 `v*` 标签时触发。构建产物为跨平台二进制（含 Windows 的 `dmcp.exe`），作为 Release 资产（assets）发布。
 >
-> 这些构建**不会**发布到 crates.io / PyPI，请直接从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载二进制使用。
+>
+> 这些构建**不会**发布到 [crates.io](http://crates.io) / PyPI，请直接从本 fork 的 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 页面下载二进制使用。
+
+---
 
 ## 故障排查
 
@@ -621,14 +605,14 @@ cargo build --release
 - **环境变量**：确保全部 `${VAR}` 引用均已定义
 - **OAuth 服务器**：按提示完成 OAuth 流程
 
-**日志级别（`--log-level` / `-v`，v1.7.0 起）：**
+**日志级别（`--log-level` / `-v`）：**
 
 服务器模式现在会正常初始化日志系统，控制台不再「永远静默」。
 
 - 新增 `--log-level`（短写 `-v`）参数，可指定控制台日志级别：`trace` / `debug` / `info` / `warn` / `error`。
 - 未指定 `--log-level` 时，按 transport 门控默认级别：
-  - `http` / `both`：默认 `warn`——默认即可看到「已在 http://127.0.0.1:8082/... 监听」提示；
-  - `stdio`：默认 `error`——仅打印错误，避免污染 stdout 上的 JSON-RPC 协议。
+- `http` / `both`：默认 `warn`——默认即可在日志看到 `MCP Streamable HTTP server listening on http://127.0.0.1:8082/dynamic-mcp`（端点路径是 `/dynamic-mcp`，不是根路径）；
+- `stdio`：默认 `error`——仅打印错误，避免污染 stdout 上的 JSON-RPC 协议。
 - 级别优先级：**`RUST_LOG` 环境变量 > `--log-level` 命令行参数 > transport 默认级别**。即 `RUST_LOG=debug` 仍可覆盖 `--log-level info`。
 
 > 历史说明：v1.6.0 的服务器模式从未初始化日志系统，无论是否设置 `RUST_LOG` 都无任何输出；当时只能靠「浏览器返回 404 而非无法连接」来判断是否在运行（见上方 `--http-endpoint` 的 404 提醒）。v1.7.0 已修复。
@@ -652,7 +636,7 @@ dmcp.exe --transport http D:\path\to\config.json
 **解决方案**：
 
 - 手动打开控制台显示的 URL
-- 检查防火墙是否允许 localhost 连接
+- 检查防火墙是否允许 `127.0.0.1`（OAuth 回跳地址）连接
 - 确认服务器的 `oauth_client_id` 正确
 
 **问题**：令牌刷新失败
@@ -683,13 +667,13 @@ dmcp.exe --transport http D:\path\to\config.json
 - 该描述用于向 LLM 解释服务器用途
 - 示例：
 
-  ```json
-  {
-    "description": "File system access - read, write, and search files",
-    "command": "npx",
-    "args": ["@modelcontextprotocol/server-filesystem"]
-  }
-  ```
+```json
+{
+  "description": "File system access - read, write, and search files",
+  "command": "npx",
+  "args": ["@modelcontextprotocol/server-filesystem"]
+}
+```
 
 **问题**：`Invalid JSON in config file`
 
@@ -699,7 +683,7 @@ dmcp.exe --transport http D:\path\to\config.json
 - 检查是否有尾随逗号
 - 确保所有必需字段齐全（`description` 始终必需；`type` 仅 http/sse 服务器必需）
 
-**问题**：配置中存在未知字段（如 `unknown field \`typo_field\`\`）
+**问题**：配置中存在未知字段（如 `unknown field \`typo_field``）
 
 **解决方案**：
 
@@ -745,16 +729,24 @@ dmcp.exe --transport http D:\path\to\config.json
 - 失败的分组占用内存极少
 - 大型工具 Schema 会增加内存占用
 
+---
+
 ## 贡献
 
 关于开发环境搭建、测试与贡献的说明，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+---
+
 ## 版本历史
 
 版本历史与发版说明见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
 
 ## 致谢
 
 - TypeScript 实现：[modular-mcp](https://github.com/d-kimuson/modular-mcp)
 - MCP 规范：[Model Context Protocol](https://modelcontextprotocol.io/)
 - Rust MCP 生态：[rust-mcp-stack](https://github.com/rust-mcp-stack)
+- mcp-bridge 参考：[mcp-bridge](https://github.com/mimicode/mcp-bridge)
+- dynamic-mcp 上游：[dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)

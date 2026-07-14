@@ -501,9 +501,10 @@ When `--transport http` or `both` is used, the facade is served at `http://<host
 
 > 💡 **What URL to type in the web LLM (important)**:
 > - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly the part after `/` in your `--http-endpoint` — **do not add or remove a `/mcp` prefix or suffix**.
-> - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
+> - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (the path is customizable; must match the suffix of the client's address).
 > - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
-> - If the console is completely empty after starting in `stdio` mode, don't panic: stdio defaults to `error` level (silence is normal). In `http`/`both` mode it defaults to `warn` and you should see "listening on …". As long as you don't get "connection refused", it is listening (see "Troubleshooting → Logging" below).
+> - If the console is completely empty after starting in `stdio` mode, don't panic: stdio defaults to `error` level (silence is normal). In `http`/`both` mode it defaults to `warn` and you should see `MCP Streamable HTTP server listening on http://127.0.0.1:8082/dynamic-mcp` (the endpoint path is `/dynamic-mcp`, not the root). As long as you don't get "connection refused", it is listening (see "Troubleshooting → Logging" below).
+> - ⚠️ **A busy port is not fatal**: in `http`/`both` mode, if `8082` is already taken by another process, you'll only see a `Failed to bind ... os error 10048` (or similar bind failure) message — the **stdio facade still listens normally**, so AI clients using stdio are unaffected. To remove the message, change the port (e.g. `--http-endpoint 127.0.0.1:9000/dynamic-mcp`) or use `--transport stdio`.
 
 ### Configuration file (no change required)
 
@@ -562,7 +563,7 @@ Here is a plain-language walkthrough of the 6 changes in v1.7.0 relative to v1.6
 - **Before (v1.6.0)**: server mode never initialized logging. Whether or not you set `RUST_LOG`, the console was silent; to know if it was running you had to infer it from "the browser returns 404 instead of connection refused" — frustrating.
 - **Now (v1.7.0)**: the server prints logs to **stderr** (no longer polluting the stdio JSON-RPC channel), and `RUST_LOG` actually works.
 - New `--log-level` (short `-v`) flag, accepting `trace` / `debug` / `info` / `warn` / `error`.
-- Default level when unspecified, gated by mode: `http` / `both` → `warn` (so by default you see "listening on http://127.0.0.1:8082/…"); `stdio` → `error` (only errors, to keep stdout clean for the protocol).
+- Default level when unspecified, gated by mode: `http` / `both` → `warn` (so by default you see `MCP Streamable HTTP server listening on http://127.0.0.1:8082/dynamic-mcp`); `stdio` → `error` (only errors, to keep stdout clean for the protocol).
 - **Precedence**: `RUST_LOG` env var > `--log-level` CLI flag > mode default. So `RUST_LOG=debug` overrides `--log-level info`.
 
 ### 4. Servers with a static Authorization header no longer pop OAuth / time out (fixes TickTick / dida365)
@@ -580,7 +581,7 @@ Here is a plain-language walkthrough of the 6 changes in v1.7.0 relative to v1.6
 ### 6. Config errors now tell you "line, column, and which field"
 
 - **Before**: a syntax or field error in the config JSON gave a vague message and you had to guess.
-- **Now**: the error precisely reports the **line, column, and the path of the offending field**, e.g. `line 12 column 5, field mcpServers.TickTick.url` — you can see at a glance that the `url` field of the `TickTick` server, at line 12 column 5, is wrong.
+- **Now**: the error precisely reports the **line, column, and the path of the offending field**, e.g. `` `at field `mcpServers.TickTick.url`, line 12, column 5` `` — you can see at a glance that the `url` field of the `TickTick` server, at line 12 column 5, is wrong.
 
 ## Fork builds via GitHub Actions
 
@@ -609,7 +610,7 @@ The server process now initializes the logging system properly, so the console i
 
 - New `--log-level` (short `-v`) flag selects the console level: `trace` / `debug` / `info` / `warn` / `error`.
 - When `--log-level` is not given, the default level is gated by transport:
-  - `http` / `both`: default `warn` — by default you'll see the "listening on http://127.0.0.1:8082/…" message.
+  - `http` / `both`: default `warn` — by default you'll see the `MCP Streamable HTTP server listening on http://127.0.0.1:8082/dynamic-mcp` message.
   - `stdio`: default `error` — only errors print, to avoid polluting the JSON-RPC protocol on stdout.
 - Precedence: **`RUST_LOG` env var > `--log-level` CLI flag > transport default level**. So `RUST_LOG=debug` still overrides `--log-level info`.
 
