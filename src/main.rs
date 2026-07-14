@@ -4,6 +4,7 @@ mod config;
 mod http;
 mod proxy;
 mod server;
+mod singleton;
 mod watcher;
 
 use anyhow::Result;
@@ -18,7 +19,9 @@ use watcher::ConfigWatcher;
 use http::server_handler::HttpFacadeHandler;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use singleton::{SingletonResult, StartMode};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tower_http::cors::CorsLayer;
 
 #[derive(Parser)]
@@ -47,6 +50,12 @@ struct Cli {
     /// HTTP path to mount the MCP Streamable HTTP endpoint
     #[arg(long, default_value = "/dynamic-mcp")]
     http_path: String,
+
+    /// When transport is `http`, allow a later `both` instance on the same
+    /// endpoint to run alongside (stdio only) instead of being evicted. Has no
+    /// effect with `--transport both` or `--transport stdio`.
+    #[arg(long, default_value_t = false)]
+    no_evict: bool,
 }
 
 #[derive(Subcommand)]
@@ -131,6 +140,15 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 });
 
+            // `--no-evict` only makes sense for a pure `http` instance: it tells a
+            // later `both` not to evict this http. Reject it otherwise.
+            if cli.no_evict && cli.transport != TransportMode::Http {
+                eprintln!(
+                    "Error: --no-evict is only valid with --transport http (a pure-http instance)."
+                );
+                std::process::exit(1);
+            }
+
             run_server(
                 config_path,
                 config_source,
@@ -138,6 +156,7 @@ async fn main() -> Result<()> {
                 cli.http_host,
                 cli.http_port,
                 cli.http_path,
+                cli.no_evict,
             )
             .await
         }
@@ -151,7 +170,26 @@ async fn run_server(
     http_host: String,
     http_port: u16,
     http_path: String,
+    no_evict: bool,
 ) -> Result<()> {
+    // Early singleton / double-launch detection. This may:
+    //  - SelfTerminate a redundant `http` after 8s (A1/A3),
+    //  - Evict an old `http` and delay our own HTTP by 8s (B1),
+    //  - Keep stdio only (B2/B3), or proceed normally.
+    let SingletonResult { mode, guard, popup } =
+        singleton::check_singleton(transport, &http_host, http_port, &http_path, no_evict).await;
+    // Hold the lock guard for the process lifetime so our lock file is removed on
+    // exit (unless a newer primary has overwritten it first).
+    let _singleton_guard = guard;
+    popup.emit();
+
+    if matches!(mode, StartMode::SelfTerminate) {
+        // Redundant http: the popup is already shown. Exit after 8s so the user
+        // can read it. Nothing else to do.
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        std::process::exit(0);
+    }
+
     tracing::info!(
         "Starting dynamic-mcp server with config: {} (from {})",
         &config_path,
@@ -306,58 +344,29 @@ async fn run_server(
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     let stdio_enabled = matches!(transport, TransportMode::Stdio | TransportMode::Both);
-    let http_enabled = matches!(transport, TransportMode::Http | TransportMode::Both);
+    let mut http_enabled = matches!(transport, TransportMode::Http | TransportMode::Both);
+
+    // The singleton decision may force HTTP off (B2/B3: keep stdio only).
+    if matches!(mode, StartMode::StdioOnly) {
+        http_enabled = false;
+    }
 
     if http_enabled {
         let client_http = client.clone();
         let name_http = name.clone();
         let version_http = version.clone();
-        let host = http_host;
+        let host = http_host.clone();
         let port = http_port;
-        let path = http_path;
+        let path = http_path.clone();
 
+        // B1: the `both` evicted an old `http` and HTTP must start 8s later so the
+        // port (TIME_WAIT) is free. Otherwise start immediately.
+        let delay = matches!(mode, StartMode::DelayHttpThenNormal);
         tokio::spawn(async move {
-            let factory = move || {
-                Ok::<_, std::io::Error>(HttpFacadeHandler::new(
-                    client_http.clone(),
-                    name_http.clone(),
-                    version_http.clone(),
-                ))
-            };
-
-            let service = StreamableHttpService::new(
-                factory,
-                Arc::new(LocalSessionManager::default()),
-                StreamableHttpServerConfig::default(),
-            );
-
-            let app = axum::Router::new()
-                .nest_service(&path, service)
-                .layer(CorsLayer::permissive());
-
-            let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("Invalid HTTP listen address {}:{}: {}", host, port, e);
-                    return;
-                }
-            };
-
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => {
-                    tracing::info!(
-                        "MCP Streamable HTTP server listening on http://{}{}",
-                        addr,
-                        path
-                    );
-                    if let Err(e) = axum::serve(listener, app).await {
-                        tracing::error!("Streamable HTTP server error: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to bind Streamable HTTP listener on {}: {}", addr, e);
-                }
+            if delay {
+                tokio::time::sleep(Duration::from_secs(8)).await;
             }
+            start_http_server(client_http, name_http, version_http, host, port, path).await;
         });
     }
 
@@ -396,6 +405,112 @@ async fn run_server(
     }
 
     result
+}
+
+/// Start the Streamable HTTP MCP server. Binds with `SO_REUSEADDR` and retries
+/// for up to ~10s so an eviction (B1) can take over the port even if it is still
+/// in `TIME_WAIT`.
+async fn start_http_server(
+    client: Arc<RwLock<ModularMcpClient>>,
+    name: String,
+    version: String,
+    host: String,
+    port: u16,
+    path: String,
+) {
+    let factory = move || {
+        Ok::<_, std::io::Error>(HttpFacadeHandler::new(
+            client.clone(),
+            name.clone(),
+            version.clone(),
+        ))
+    };
+
+    let service = StreamableHttpService::new(
+        factory,
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+
+    let app = axum::Router::new()
+        .nest_service(&path, service)
+        .layer(CorsLayer::permissive());
+
+    let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("Invalid HTTP listen address {}:{}: {}", host, port, e);
+            return;
+        }
+    };
+
+    match bind_with_retry(&addr).await {
+        Ok(listener) => {
+            tracing::info!(
+                "MCP Streamable HTTP server listening on http://{}{}",
+                addr,
+                path
+            );
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("Streamable HTTP server error: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                "Failed to bind Streamable HTTP listener on {} after retries: {}",
+                addr,
+                e
+            );
+        }
+    }
+}
+
+/// Try to bind `addr`, retrying for ~10s. Enables `SO_REUSEADDR` first so a port
+/// left in `TIME_WAIT` (common right after an eviction) can be reused.
+async fn bind_with_retry(addr: &SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // The initial `None` is only ever observed if the deadline is already past at
+    // the very first iteration; clippy otherwise flags it as an unused assignment.
+    #[allow(unused_assignments)]
+    let mut last_err = None;
+    loop {
+        let socket = if addr.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()
+        } else {
+            tokio::net::TcpSocket::new_v6()
+        };
+        let socket = match socket {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = Some(e);
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+        };
+        let _ = socket.set_reuseaddr(true);
+        match socket.bind(*addr) {
+            Ok(_) => match socket.listen(1024) {
+                // `TcpSocket::listen` already returns a `tokio::net::TcpListener`,
+                // so no `from_std` conversion is needed (and would be a type error).
+                Ok(listener) => return Ok(listener),
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "failed to bind HTTP listener after retries",
+        )
+    }))
 }
 
 #[cfg(test)]

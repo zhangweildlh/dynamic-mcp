@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-14
+
+### Added
+
+- **Singleton / double-launch detection for HTTP endpoints** - When starting with `--transport http` or `both`, dynamic-mcp now detects whether another instance already owns the same HTTP endpoint (`--http-host` + `--http-port` + `--http-path`) and resolves the conflict automatically instead of failing silently or hitting a port clash.
+  - A per-endpoint lock file under `~/.dynamic-mcp/locks/<sha256(endpoint)[..16]>.lock` records the owner's pid, transport, `--no-evict` flag, and executable path.
+  - Decisions (pure, unit-tested `decide()`): a redundant `http` self-terminates after 8s; a `both` evicts an existing `http` (unless that http was started with `--no-evict`) and takes over the port 8s later with stdio available immediately; a `both` vs `both` (or vs a `--no-evict` http) keeps stdio only with HTTP off.
+  - Stale locks are detected via pid liveness + executable-path comparison, so a reused pid cannot be mistaken for a live instance.
+  - New `--no-evict` flag (valid only with `--transport http`): marks a plain http instance so a later `both` coexists (stdio only) instead of being evicted.
+  - Two-layer user notification (double-launch `warn` + port-conflict `warn`) merged into a single popup: a real closable `MessageBoxW` on Windows, `notify-send` on Linux, `osascript` on macOS, plus a stderr line on every platform.
+  - HTTP bind uses `SO_REUSEADDR` with a ~10s retry so an eviction can take over the port even while it is in `TIME_WAIT`.
+
 ## [1.6.0] - 2026-07-10
 
 ### Added
