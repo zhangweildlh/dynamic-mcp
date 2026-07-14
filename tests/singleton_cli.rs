@@ -16,6 +16,8 @@ fn no_evict_rejected_without_http_transport() {
                 "--transport",
                 transport,
                 "--no-evict",
+                "--http-port",
+                "38082",
                 "tests/fixtures/singleton_dummy.json",
             ])
             .output()
@@ -42,6 +44,8 @@ fn no_evict_accepted_with_http_transport() {
             "--transport",
             "http",
             "--no-evict",
+            "--http-port",
+            "38082",
             "tests/fixtures/singleton_dummy.json",
         ])
         .spawn()

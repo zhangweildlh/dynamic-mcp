@@ -490,10 +490,9 @@ async fn bind_with_retry(addr: &SocketAddr) -> std::io::Result<tokio::net::TcpLi
         let _ = socket.set_reuseaddr(true);
         match socket.bind(*addr) {
             Ok(_) => match socket.listen(1024) {
-                Ok(std_listener) => match tokio::net::TcpListener::from_std(std_listener) {
-                    Ok(listener) => return Ok(listener),
-                    Err(e) => last_err = Some(e),
-                },
+                // `TcpSocket::listen` already returns a `tokio::net::TcpListener`,
+                // so no `from_std` conversion is needed (and would be a type error).
+                Ok(listener) => return Ok(listener),
                 Err(e) => last_err = Some(e),
             },
             Err(e) => last_err = Some(e),

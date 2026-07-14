@@ -29,8 +29,8 @@
 //!
 //! A pure `stdio` instance never touches the port, so detection is skipped for it.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
