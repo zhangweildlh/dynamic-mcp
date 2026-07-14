@@ -469,6 +469,9 @@ async fn start_http_server(
 /// left in `TIME_WAIT` (common right after an eviction) can be reused.
 async fn bind_with_retry(addr: &SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // The initial `None` is only ever observed if the deadline is already past at
+    // the very first iteration; clippy otherwise flags it as an unused assignment.
+    #[allow(unused_assignments)]
     let mut last_err = None;
     loop {
         let socket = if addr.is_ipv4() {

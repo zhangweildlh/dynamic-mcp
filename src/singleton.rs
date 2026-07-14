@@ -299,9 +299,8 @@ fn process_exe_path(pid: u32) -> Option<String> {
     {
         unsafe {
             use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::ProcessStatus::QueryFullProcessImageNameW;
             use windows_sys::Win32::System::Threading::{
-                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
             };
             let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if h.is_null() {
@@ -449,7 +448,8 @@ pub fn show_popup(title: &str, message: &str) {
 
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, HWND, MB_ICONWARNING};
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING};
         let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         let msg_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
         // `move` the Vecs into the thread so the UTF-16 buffers outlive the call.
