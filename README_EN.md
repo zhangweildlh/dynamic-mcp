@@ -664,6 +664,7 @@ New command-line flags control HTTP exposure (the config file is **unchanged** �
 | `--http-host`  | `127.0.0.1`    | Which machine the HTTP window "binds to". Default `127.0.0.1` = only your own computer can reach it (safest). Usually leave it; change only to let LAN/other devices connect (has security risk). |
 | `--http-port`  | `8082`         | The window's "door number". Default 8082; change it (e.g. 9000) if another program already uses 8082. |
 | `--http-path`  | `/dynamic-mcp` | The window's "room name". The address you type in the client must end with it, e.g. `http://127.0.0.1:8082/dynamic-mcp`. |
+| `--no-evict`   | `false`        | Only valid with `--transport http`. "Locks" the current plain http instance: it tells a future `both` started on the same port "don't kill me", so that `both` runs stdio only and leaves HTTP off — the two coexist peacefully. Passing it with `--transport both` or `stdio` errors out immediately. |
 
 ### Usage
 
@@ -717,6 +718,44 @@ dmcp --transport both /path/to/dynamic-mcp.json
 - **Web-based MCP clients and playgrounds** that speak Streamable HTTP.
 - **Cascaded MCP proxies** — a second proxy or orchestrator connects to dynamic-mcp over HTTP instead of spawning subprocesses.
 - **Single-endpoint multi-group access** — one HTTP endpoint serves every group; the client selects a group via `get_dynamic_tools` / `call_dynamic_tool`.
+
+## v1.8.0 new: singleton and double-launch detection
+
+When you start dynamic-mcp with `--transport http` or `both`, it **first checks whether another dynamic-mcp is already running on the same HTTP endpoint (`--http-host` + `--http-port` + `--http-path`)**. This prevents silent failure or port conflicts from "two instances fighting over one port". In plain language:
+
+### Why detect (plain language)
+
+- One HTTP port can only be used by one process at a time. If you accidentally start two instances pointing at the same endpoint, the later one either fails to connect or kicks the earlier one off — wasting resources and confusing you ("which one am I actually connected to?").
+- So dynamic-mcp probes this at startup and does the most sensible thing for you, instead of failing later.
+
+### The cases and the outcome
+
+| You start | Already on same port | Outcome (plain language) |
+| --- | --- | --- |
+| plain `http` | `both` (already includes http) | The new plain http is **pointless** (the existing both already serves http), so it **exits after 8 seconds**, letting you reuse the existing both. |
+| plain `http` | plain `http` | Same: the new one is a "wasteful double launch", so it **exits after 8 seconds**; reuse the existing one. |
+| `both` | plain `http` (**without** `--no-evict`) | The new `both` **takes over** the port: stdio is available immediately, and the HTTP port is picked up 8 seconds later (the old plain http is shut down first). One process does both jobs — most efficient. |
+| `both` | plain `http` (**with** `--no-evict`) | No port fight: the new `both` **runs stdio only**, HTTP stays off; the old plain http keeps the port and the two coexist peacefully (but you accept "new both has no HTTP"). |
+| `both` | `both` | Also treated as "wasteful double launch": the new `both` **runs stdio only**, HTTP stays off, the old one is not killed. |
+
+> Key note: **the `--no-evict` switch is only read on the *existing* plain http**. Whether the new `both` passes `--no-evict` does not matter — what decides whether to kill the old http is whether the old http itself was started with `--no-evict`.
+
+### The address your LLM client uses must match in three places
+
+Whether you "reuse the existing instance" or "the new both takes over the port", the address your client (web LLM / desktop app) connects to must exactly match the startup flags `--http-host` / `--http-port` / `--http-path`:
+
+- Startup command: `dmcp --transport both --http-host 127.0.0.1 --http-port 8082 --http-path /dynamic-mcp config.json`
+- The LLM's MCP config must also say: `http://127.0.0.1:8082/dynamic-mcp`
+- All three (`--http-host` / `--http-port` / `--http-path`) must agree pairwise, otherwise it's a 404 / connection failure.
+
+### What you should do (checklist)
+
+1. **Decide whether you really need two instances** — in most cases just reuse the existing one; no need to start another.
+2. **To keep the old plain http from being killed**: start that plain http with `--no-evict`; then when you later start `both`, it won't take over the port and will run stdio only.
+3. **Don't panic at "double-launch waste" or "port occupied" warnings**: the log has two layers — one `warn` for "double-launch waste", one `warn` for "port occupied + which port to switch to" (both are shown / printed, but merged into a single popup). Just change the port in your startup command and LLM config to match, per the hint.
+4. **The popup is only a notice**: on Windows a real, manually closable dialog appears; on Linux `notify-send`; on macOS `osascript`. Close it when done — it does not affect the service.
+
+> 💡 Detection only applies to the HTTP endpoint. **Plain `stdio` instances do not affect each other** — stdio does not use a port, so multiple stdio instances can run in parallel (each is simply driven by its own LLM client).
 
 ## Fork builds via GitHub Actions
 
