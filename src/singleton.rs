@@ -220,17 +220,6 @@ pub fn write_lock(endpoint: &str, lock: &InstanceLock) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read the current lock file (if any).
-pub fn read_lock(endpoint: &str) -> Option<InstanceLock> {
-    let content = fs::read_to_string(lock_file_path(endpoint)).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-/// Delete the lock file (best-effort).
-pub fn remove_lock(endpoint: &str) {
-    let _ = fs::remove_file(lock_file_path(endpoint));
-}
-
 /// RAII guard: deletes *our own* lock file on drop, but only if it still records
 /// our pid (so we never delete a lock belonging to a newer primary, e.g. after a
 /// B1 takeover the old http must not remove the new both's lock).
@@ -448,13 +437,19 @@ pub fn show_popup(title: &str, message: &str) {
 
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING};
         let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         let msg_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
         // `move` the Vecs into the thread so the UTF-16 buffers outlive the call.
+        // `HWND` is a type alias in windows-sys (not a tuple struct), so pass a
+        // null handle directly rather than constructing it.
         std::thread::spawn(move || unsafe {
-            MessageBoxW(HWND(0), msg_w.as_ptr(), title_w.as_ptr(), MB_ICONWARNING);
+            MessageBoxW(
+                std::ptr::null_mut(),
+                msg_w.as_ptr(),
+                title_w.as_ptr(),
+                MB_ICONWARNING,
+            );
         });
     }
     #[cfg(target_os = "macos")]
