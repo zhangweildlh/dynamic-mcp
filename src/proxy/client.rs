@@ -27,6 +27,21 @@ pub struct ModularMcpClient {
     groups: HashMap<String, GroupState>,
 }
 
+/// Derive capability tags from a group's server config. Used to enrich
+/// `GroupInfo` and per-tool `x-capabilities` metadata so hosts can learn a
+/// group's transport kind and whether it requires OAuth without probing.
+fn derive_capability_tags(config: &McpServerConfig) -> Vec<String> {
+    let mut tags = match config {
+        McpServerConfig::Stdio { .. } => vec!["stdio".to_string()],
+        McpServerConfig::Http { .. } => vec!["http".to_string()],
+        McpServerConfig::Sse { .. } => vec!["sse".to_string()],
+    };
+    if config.needs_oauth() {
+        tags.push("oauth".to_string());
+    }
+    tags
+}
+
 impl ModularMcpClient {
     pub fn new() -> Self {
         Self {
@@ -210,10 +225,16 @@ impl ModularMcpClient {
             .values()
             .filter_map(|state| match state {
                 GroupState::Connected {
-                    name, description, ..
+                    name,
+                    description,
+                    tools,
+                    config,
+                    ..
                 } => Some(GroupInfo {
                     name: name.clone(),
                     description: description.clone(),
+                    tool_count: tools.len(),
+                    capability_tags: derive_capability_tags(config),
                 }),
                 _ => None,
             })
