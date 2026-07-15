@@ -262,7 +262,7 @@ impl HttpFacadeHandler {
                     "message": msg,
                     "cause": null
                 });
-                result_err(serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| msg))
+                result_err(serde_json::to_string_pretty(&envelope).unwrap_or(msg))
             }
         }
     }
