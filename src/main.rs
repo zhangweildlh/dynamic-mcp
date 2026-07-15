@@ -39,17 +39,10 @@ struct Cli {
     #[arg(long, value_enum, default_value = "stdio")]
     transport: TransportMode,
 
-    /// HTTP host/address to bind when transport includes http
-    #[arg(long, default_value = "127.0.0.1")]
-    http_host: String,
-
-    /// HTTP port to bind when transport includes http
-    #[arg(long, default_value_t = 8082)]
-    http_port: u16,
-
-    /// HTTP path to mount the MCP Streamable HTTP endpoint
-    #[arg(long, default_value = "/dynamic-mcp")]
-    http_path: String,
+    /// Full HTTP endpoint `host:port/path` to bind when transport includes http.
+    /// IPv6 uses `[host]:port/path`. Defaults to `127.0.0.1:8082/dynamic-mcp`.
+    #[arg(long, default_value = "127.0.0.1:8082/dynamic-mcp")]
+    http_endpoint: String,
 
     /// When transport is `http`, allow a later `both` instance on the same
     /// endpoint to run alongside (stdio only) instead of being evicted. Has no
@@ -153,9 +146,7 @@ async fn main() -> Result<()> {
                 config_path,
                 config_source,
                 cli.transport,
-                cli.http_host,
-                cli.http_port,
-                cli.http_path,
+                cli.http_endpoint,
                 cli.no_evict,
             )
             .await
@@ -167,17 +158,25 @@ async fn run_server(
     config_path: String,
     config_source: &str,
     transport: TransportMode,
-    http_host: String,
-    http_port: u16,
-    http_path: String,
+    http_endpoint: String,
     no_evict: bool,
 ) -> Result<()> {
     // Early singleton / double-launch detection. This may:
     //  - SelfTerminate a redundant `http` after 8s (A1/A3),
     //  - Evict an old `http` and delay our own HTTP by 8s (B1),
     //  - Keep stdio only (B2/B3), or proceed normally.
+    let (ep_host, ep_port, ep_path) = parse_http_endpoint(&http_endpoint)
+        .map_err(|e| anyhow::anyhow!("无效的 --http-endpoint 参数：{e}"))?;
+    let canonical = canonical_endpoint(&ep_host, ep_port, &ep_path);
+    // IPv6 绑定需要方括号形式；锁 key 用裸 host（见 D4）。
+    let bind_host = if ep_host.contains(':') {
+        format!("[{}]", ep_host)
+    } else {
+        ep_host.clone()
+    };
+    let display = format!("{}:{}", bind_host, ep_port);
     let SingletonResult { mode, guard, popup } =
-        singleton::check_singleton(transport, &http_host, http_port, &http_path, no_evict).await;
+        singleton::check_singleton(transport, &canonical, &display, no_evict).await;
     // Hold the lock guard for the process lifetime so our lock file is removed on
     // exit (unless a newer primary has overwritten it first).
     let _singleton_guard = guard;
@@ -355,9 +354,9 @@ async fn run_server(
         let client_http = client.clone();
         let name_http = name.clone();
         let version_http = version.clone();
-        let host = http_host.clone();
-        let port = http_port;
-        let path = http_path.clone();
+        let host = bind_host.clone();
+        let port = ep_port;
+        let path = ep_path.clone();
 
         // B1: the `both` evicted an old `http` and HTTP must start 8s later so the
         // port (TIME_WAIT) is free. Otherwise start immediately.
@@ -513,6 +512,74 @@ async fn bind_with_retry(addr: &SocketAddr) -> std::io::Result<tokio::net::TcpLi
     }))
 }
 
+/// 解析 `--http-endpoint`（`host:port/path`，IPv6 `[host]:port/path`）。
+/// 可选 `http://` / `https://` 前缀被忽略（大小写不敏感），其余原样保留。
+/// 缺端口默认 8082；缺 path 默认 /dynamic-mcp；path 经 normalize_path 归一化。
+/// 任何非法输入返回 Err（人话报错，不 panic、不静默回落）。
+fn parse_http_endpoint(input: &str) -> anyhow::Result<(String, u16, String)> {
+    // 1. 忽略大小写敏感的 http(s):// 前缀
+    let rest = if input.len() >= 7 && input[..7].eq_ignore_ascii_case("http://") {
+        &input[7..]
+    } else if input.len() >= 8 && input[..8].eq_ignore_ascii_case("https://") {
+        &input[8..]
+    } else {
+        input
+    };
+    // 2. 拆 authority(host:port) 与 path
+    let (authority, raw_path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    // 3. host + port
+    let (host, port) = if authority.starts_with('[') {
+        // IPv6：必须有闭合 ']'，否则明确报错（杜绝越界 panic）
+        let end = authority
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("IPv6 端点缺少闭合 ']'：{input}"))?;
+        let h = &authority[1..end];
+        // 缺 ':端口' → 默认 8082；有 ':端口' 但非法 → 报错
+        let p = authority[end + 1..].strip_prefix(':').unwrap_or("8082");
+        let port: u16 = p
+            .parse()
+            .map_err(|_| anyhow::anyhow!("端点端口非法（仅支持 0-65535）：{input}"))?;
+        (h.to_string(), port)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => {
+                let port: u16 = p
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("端点端口非法（仅支持 0-65535）：{input}"))?;
+                (h.to_string(), port)
+            }
+            None => (authority.to_string(), 8082), // 缺端口段 → 默认 8082
+        }
+    };
+    if host.is_empty() {
+        return Err(anyhow::anyhow!("端点必须包含 host：{input}"));
+    }
+    // 4. 归一化 path
+    Ok((host, port, normalize_path(raw_path)))
+}
+
+/// 单例锁文件的规范 key，与 v1.8.0 的 format!("{}:{}{}", host, port, path) 逐字节一致。
+fn canonical_endpoint(host: &str, port: u16, path: &str) -> String {
+    format!("{}:{}{}", host, port, path)
+}
+
+/// 合并重复斜杠、保留单个前导 `/`、去除尾部斜杠；空结果回落 /dynamic-mcp。
+fn normalize_path(raw: &str) -> String {
+    let cleaned: String = raw
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if cleaned.is_empty() {
+        "/dynamic-mcp".to_string()
+    } else {
+        format!("/{}", cleaned)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,5 +635,86 @@ mod tests {
         assert!(result.is_none());
 
         env::remove_var("DYNAMIC_MCP_CONFIG");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_default() {
+        let (h, p, path) = parse_http_endpoint("127.0.0.1:8082/dynamic-mcp").unwrap();
+        assert_eq!(h, "127.0.0.1");
+        assert_eq!(p, 8082);
+        assert_eq!(path, "/dynamic-mcp");
+        assert_eq!(
+            canonical_endpoint(&h, p, &path),
+            "127.0.0.1:8082/dynamic-mcp"
+        );
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_custom() {
+        let (h, p, path) = parse_http_endpoint("0.0.0.0:9000/mcp").unwrap();
+        assert_eq!(h, "0.0.0.0");
+        assert_eq!(p, 9000);
+        assert_eq!(path, "/mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_no_path() {
+        let (_, _, path) = parse_http_endpoint("127.0.0.1:8082").unwrap();
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_trailing_slash() {
+        let (_, _, path) = parse_http_endpoint("127.0.0.1:8082/dynamic-mcp/").unwrap();
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_double_slash() {
+        let (_, _, path) = parse_http_endpoint("127.0.0.1:8082/a//b").unwrap();
+        assert_eq!(path, "/a/b");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_ipv6() {
+        let (h, p, path) = parse_http_endpoint("[::1]:8082/path").unwrap();
+        assert_eq!(h, "::1");
+        assert_eq!(p, 8082);
+        assert_eq!(path, "/path");
+        assert_eq!(canonical_endpoint(&h, p, &path), "::1:8082/path");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_ipv6_no_path() {
+        let (_, _, path) = parse_http_endpoint("[::1]:8082").unwrap();
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_scheme_stripped() {
+        let (h, p, path) = parse_http_endpoint("http://127.0.0.1:8082/mcp").unwrap();
+        assert_eq!((h.as_str(), p, path.as_str()), ("127.0.0.1", 8082, "/mcp"));
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_port_zero() {
+        let (h, p, path) = parse_http_endpoint("127.0.0.1:0/dynamic-mcp").unwrap();
+        assert_eq!(h, "127.0.0.1");
+        assert_eq!(p, 0);
+        assert_eq!(path, "/dynamic-mcp");
+    }
+
+    #[test]
+    fn test_parse_http_endpoint_invalid_errors() {
+        // 缺 ']' 的 IPv6
+        assert!(parse_http_endpoint("[::1:8082/path").is_err());
+        // 端口超界
+        assert!(parse_http_endpoint("127.0.0.1:99999/x").is_err());
+        // 非数字端口
+        assert!(parse_http_endpoint("127.0.0.1:abc/x").is_err());
+        // 无 host
+        assert!(parse_http_endpoint("/dynamic-mcp").is_err());
+        // 空串
+        assert!(parse_http_endpoint("").is_err());
     }
 }

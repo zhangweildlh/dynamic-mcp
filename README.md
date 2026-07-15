@@ -495,9 +495,7 @@ v1.6.0 起，`--transport` 决定 dynamic-mcp 以哪种方式对外服务。三�
 | 参数            | 默认值          | 说明（人话）                                      |
 | --------------- | --------------- | ------------------------------------------------- |
 | `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
-| `--http-host`   | `127.0.0.1`     | HTTP 对外窗口「绑在哪台机器」。默认 `127.0.0.1` = 只有你本机连得上（最安全）。一般别改；想让同局域网/其他设备也能连才改（有安全风险）。 |
-| `--http-port`   | `8082`          | 对外窗口的「门牌号」。默认 8082；若被别的程序占用就换一个（如 9000）。 |
-| `--http-path`   | `/dynamic-mcp`  | 窗口上的「房间名」。客户端连接时填的地址末尾要和它对上，例如 `http://127.0.0.1:8082/dynamic-mcp`。 |
+| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | HTTP 对外窗口的「完整地址」，格式为 `host:port/path`：`host` = 绑在哪台机器（默认 `127.0.0.1` 只有你本机连得上，最安全；想让同局域网/其他设备连才改，有安全风险）；`port` = 门牌号（默认 8082，被占用就换如 9000）；`path` = 房间名（默认 `/dynamic-mcp`，客户端连接地址末尾要和它一致，例如 `http://127.0.0.1:8082/dynamic-mcp`）。 |
 | `--no-evict`    | `false`         | 仅对 `--transport http` 有效。给当前的纯 http 实例"上锁"：告诉将来同端口启动的 `both` 实例"别强杀我"，让 `both` 只开 stdio、HTTP 关掉，二者和平共存。配 `--transport both` 或 `stdio` 时会直接报错退出。 |
 
 ### 使用方法
@@ -510,14 +508,14 @@ dmcp --transport http /path/to/dynamic-mcp.json
 dmcp --transport both /path/to/dynamic-mcp.json
 
 # 绑定到所有网卡，自定义端口与路径：
-dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /path/to/dynamic-mcp.json
+dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 ```
 
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
 
 > 💡 **网页 LLM 里地址到底怎么填（重点）**：
-> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-path` 的值，**前后都不要再加减 `/mcp`**。
-> - 例如你用 `--http-path /dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
+> - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `host:port/path` 的 `path` 部分，**前后都不要再加减 `/mcp`**。
+> - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
 > - 启动后控制台若毫无输出也别慌：v1.6.0 服务器模式默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。
 
@@ -555,7 +553,7 @@ dmcp --transport both /path/to/dynamic-mcp.json
 
 ## v1.8.0 新增：单例与双开检测
 
-当你用 `--transport http` 或 `both` 启动 dynamic-mcp 时，它会**先检查同一个 HTTP 端点（`--http-host` + `--http-port` + `--http-path`）上是否已经有另一个 dynamic-mcp 在跑**。这避免了"两个实例抢同一个端口"导致的静默失败或端口冲突。规则用人话讲就是：
+当你用 `--transport http` 或 `both` 启动 dynamic-mcp 时，它会**先检查同一个 HTTP 端点（`--http-endpoint`）上是否已经有另一个 dynamic-mcp 在跑**。这避免了"两个实例抢同一个端口"导致的静默失败或端口冲突。规则用人话讲就是：
 
 ### 为什么要检测（大白话）
 
@@ -576,11 +574,11 @@ dmcp --transport both /path/to/dynamic-mcp.json
 
 ### 给 LLM 客户端的地址必须三处一致
 
-无论你是"复用已有实例"还是"新 both 接管端口"，**客户端（网页 LLM / 桌面软件）连接时填的地址，必须和启动命令里的 `--http-host` / `--http-port` / `--http-path` 完全一致**：
+无论你是"复用已有实例"还是"新 both 接管端口"，**客户端（网页 LLM / 桌面软件）连接时填的地址，必须和启动命令里的 `--http-endpoint` 完全一致**：
 
-- 启动命令：`dmcp --transport both --http-host 127.0.0.1 --http-port 8082 --http-path /dynamic-mcp config.json`
+- 启动命令：`dmcp --transport both --http-endpoint 127.0.0.1:8082/dynamic-mcp config.json`
 - LLM 的 MCP 配置里也要写：`http://127.0.0.1:8082/dynamic-mcp`
-- 三处（`--http-host` / `--http-port` / `--http-path`）必须两两对上，否则就是 404 / 连不上。
+- `--http-endpoint` 里的 `host` / `port` / `path` 必须和 MCP 配置地址对应，否则就是 404 / 连不上。
 
 ### 你该怎么做（自查清单）
 
@@ -647,7 +645,7 @@ Python 包使用 **maturin** 配合 `bindings = "bin"`，将 Rust 二进制直�
 在 **v1.6.0** 中，运行服务器（`--transport http` 或 `both`）时，**控制台默认是空的、没有任何输出**——这不是程序崩溃，而是已知行为：
 
 - 日志系统只在 `import` 子命令里初始化，运行服务器时**没有**初始化；因此无论你是否设置 `RUST_LOG`，服务器模式都不会打印任何日志（包括 INFO 级的「已在 xxx 监听」提示都会被抑制）。
-- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → http-path」的 404 提醒）。
+- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → http-endpoint」的 404 提醒）。
 
 > ⚠️ **别被空控制台骗了**：看到 CMD 里一行都没有，以为没启动成功——其实它正安静地监听在 `127.0.0.1:8082`。「监听成功」那行日志只是被屏蔽了而已。
 

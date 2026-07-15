@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-07-15
+
+### ⚠️ Breaking Changes
+
+- **Merged HTTP endpoint flags** — `--http-host` / `--http-port` / `--http-path` replaced by a single `--http-endpoint` (`host:port/path`, IPv6 `[host]:port/path`). Default `127.0.0.1:8082/dynamic-mcp`. Update startup scripts and LLM MCP configs.
+
+### Fixed
+
+- **IPv6 bind address** — binding to `::1` (or any IPv6 host) no longer fails to parse; the address is correctly bracketed before `SocketAddr` parsing (v1.8.0 crashed on IPv6 hosts).
+- **Singleton conflict popup for IPv6** — the port-conflict popup now always shows the address (including IPv6) instead of being silently skipped.
+- **macOS popup with newlines** — the `osascript` popup no longer fails silently when the message contains a newline (AppleScript string concatenation fix).
+
+### Changed
+
+- Singleton detection keys on the canonical `host:port/path` string (IPv6 brackets stripped), keeping cross-version lock-file compatibility with v1.8.0.
+- Conflict / double-launch popup messages now reference `--http-endpoint` with a full example.
+
 ## [1.8.0] - 2026-07-14
 
 ### Added

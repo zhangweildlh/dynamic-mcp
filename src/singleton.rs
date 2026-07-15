@@ -454,12 +454,17 @@ pub fn show_popup(title: &str, message: &str) {
     }
     #[cfg(target_os = "macos")]
     {
-        let msg = message.replace('"', "'").replace('\\', "");
+        // 仅转义 AppleScript 字符串内的 " 与 \（走 exec 不经 shell(命令行解释器)，无需处理 $/反引号）
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        // 裸换行在 AppleScript 字符串字面量里是语法错误 → 用 " & return & " 拼接（修复 mac(苹果系统) 弹窗因含 \n 静默失败）
+        let joined = esc(&message)
+            .split('\n')
+            .collect::<Vec<_>>()
+            .join("\" & return & \"");
+        let title_esc = esc(&title);
+        let script = format!("display dialog \"{}\" with title \"{}\"", joined, title_esc);
         let _ = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                &format!("display dialog \"{}\" with title \"{}\"", msg, title),
-            ])
+            .args(["-e", &script])
             .spawn();
     }
     #[cfg(target_os = "linux")]
@@ -478,13 +483,12 @@ pub fn show_popup(title: &str, message: &str) {
 ///
 /// This is called *before* any config loading or upstream connections, so a
 /// redundant `http` instance wastes no work before it self-terminates. The
-/// endpoint is identified by `host:port/path` (the three `--http-*` CLI args
-/// joined together); two instances on different endpoints are independent.
+/// endpoint is identified by `host:port/path` (the single `--http-endpoint` CLI arg,
+/// form `host:port/path`); two instances on different endpoints are independent.
 pub async fn check_singleton(
     transport: TransportMode,
-    http_host: &str,
-    http_port: u16,
-    http_path: &str,
+    endpoint: &str,
+    display_addr: &str,
     allow_dual: bool,
 ) -> SingletonResult {
     // Stdio never binds a port -> nothing to detect, no lock to write.
@@ -498,8 +502,6 @@ pub async fn check_singleton(
 
     // Full endpoint key: host + port + path. Used as the lock-file name hash so
     // that distinct endpoints never collide (they are genuinely separate instances).
-    let endpoint = format!("{}:{}{}", http_host, http_port, http_path);
-
     let my_pid = std::process::id();
     let exe_path = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
@@ -508,15 +510,15 @@ pub async fn check_singleton(
         pid: my_pid,
         transport: transport_str(transport).to_string(),
         allow_dual,
-        endpoint: endpoint.clone(),
+        endpoint: endpoint.to_string(),
         exe_path,
         started_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    match try_acquire_lock(&endpoint, &my_lock) {
+    match try_acquire_lock(endpoint, &my_lock) {
         Ok(AcquireResult::Acquired) => SingletonResult {
             mode: StartMode::Normal,
-            guard: Some(LockGuard::new(lock_file_path(&endpoint), my_pid)),
+            guard: Some(LockGuard::new(lock_file_path(endpoint), my_pid)),
             popup: PopupCollector::new(),
         },
         Ok(AcquireResult::Conflict(old)) => {
@@ -529,10 +531,8 @@ pub async fn check_singleton(
                     popup,
                 },
                 DecisionKind::SelfTerminate => {
-                    if let Some(addr) = endpoint_addr(http_host, http_port) {
-                        popup.add_double_open(double_open_msg(transport, &old));
-                        popup.add_port_conflict(port_conflict_msg(&old, &addr));
-                    }
+                    popup.add_double_open(double_open_msg(transport, &old));
+                    popup.add_port_conflict(port_conflict_msg(&old, display_addr));
                     SingletonResult {
                         mode: StartMode::SelfTerminate,
                         guard: None,
@@ -548,14 +548,14 @@ pub async fn check_singleton(
                     if is_pid_alive(old.pid) {
                         force_kill(old.pid);
                     }
-                    let _ = write_lock(&endpoint, &my_lock); // become the new primary
+                    let _ = write_lock(endpoint, &my_lock); // become the new primary
                     popup.add_info(
                         "当前启动的 both 模式可接替已运行的 http 实例：stdio 已立即启动，HTTP 将在 8 秒后接管端口。"
                             .to_string(),
                     );
                     SingletonResult {
                         mode: StartMode::DelayHttpThenNormal,
-                        guard: Some(LockGuard::new(lock_file_path(&endpoint), my_pid)),
+                        guard: Some(LockGuard::new(lock_file_path(endpoint), my_pid)),
                         popup,
                     }
                 }
@@ -584,12 +584,6 @@ pub async fn check_singleton(
     }
 }
 
-/// Build the `SocketAddr` (host:port) used in the port-conflict message. The
-/// path component is irrelevant for a `SocketAddr`, so it is dropped here.
-fn endpoint_addr(host: &str, port: u16) -> Option<std::net::SocketAddr> {
-    format!("{}:{}", host, port).parse().ok()
-}
-
 /// Layer-1 message body (why this launch is redundant).
 fn double_open_msg(new: TransportMode, old: &InstanceLock) -> String {
     match (new, old.transport.as_str()) {
@@ -606,14 +600,14 @@ fn double_open_msg(new: TransportMode, old: &InstanceLock) -> String {
 }
 
 /// Layer-2 message body (port occupied + what the user should do).
-fn port_conflict_msg(old: &InstanceLock, addr: &std::net::SocketAddr) -> String {
+fn port_conflict_msg(old: &InstanceLock, addr: &str) -> String {
     match old.transport.as_str() {
         "both" => format!(
-            "端口 {} 已被已运行的 both 模式 dynamic-mcp 占用。\n建议：① 你不必新开 http —— 已有的 both 模式已包含 http 功能，可直接复用；② 若确实需要单独再跑 http，请在启动命令的 --http-host / --http-port 与 LLM 的 MCP 配置文件中都改成其他端口（两处必须一致）。",
+            "端口 {} 已被已运行的 both 模式 dynamic-mcp 占用。\n建议：① 你不必新开 http —— 已有的 both 模式已包含 http 功能，可直接复用；② 若确实需要单独再跑 http，请在启动命令的 --http-endpoint 与 LLM 的 MCP 配置文件中都改成其他端点（两处必须一致，例如 --http-endpoint 127.0.0.1:9000/dynamic-mcp）。",
             addr
         ),
         "http" => format!(
-            "端口 {} 已被已运行的 http 模式 dynamic-mcp 占用。\n建议：若确实需要再开一个 http 实例，请在启动命令的 --http-host / --http-port 与 LLM 的 MCP 配置文件中都改成其他端口（两处必须一致）。",
+            "端口 {} 已被已运行的 http 模式 dynamic-mcp 占用。\n建议：若确实需要再开一个 http 实例，请在启动命令的 --http-endpoint 与 LLM 的 MCP 配置文件中都改成其他端点（两处必须一致，例如 --http-endpoint 127.0.0.1:9000/dynamic-mcp）。",
             addr
         ),
         _ => format!("端口 {} 已被另一个 dynamic-mcp 实例占用。", addr),
