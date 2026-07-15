@@ -44,8 +44,8 @@ fn no_evict_accepted_with_http_transport() {
             "--transport",
             "http",
             "--no-evict",
-            "--http-port",
-            "38082",
+            "--http-endpoint",
+            "127.0.0.1:38082/dynamic-mcp",
             "tests/fixtures/singleton_dummy.json",
         ])
         .spawn()

@@ -515,7 +515,7 @@ pub async fn check_singleton(
         started_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    match try_acquire_lock(&endpoint, &my_lock) {
+    match try_acquire_lock(endpoint, &my_lock) {
         Ok(AcquireResult::Acquired) => SingletonResult {
             mode: StartMode::Normal,
             guard: Some(LockGuard::new(lock_file_path(endpoint), my_pid)),
