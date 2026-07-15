@@ -469,7 +469,7 @@ You can customize these for servers that need more time:
 In **v1.6.0**, when running the server (`--transport http` or `both`), **the console is empty by default — no output at all**. This is not a crash; it is a known behavior:
 
 - The logging system is only initialized for the `import` subcommand; it is **not** initialized when running the server. So whether or not you set `RUST_LOG`, server mode prints no logs (including the INFO-level "listening on xxx" message, which is suppressed).
-- How to tell the server is actually running? When you connect from a browser / web LLM and get **`HTTP 404`** (rather than "connection refused"), it means the server is already listening — you just used the wrong **path** (see the 404 note under "Parameters → http-path" above).
+- How to tell the server is actually running? When you connect from a browser / web LLM and get **`HTTP 404`** (rather than "connection refused"), it means the server is already listening — you just used the wrong **path** (see the 404 note under "Parameters → http-endpoint" above).
 
 > ⚠️ **Don't be fooled by the empty console**: seeing nothing in CMD doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`. The "listening" log line is just suppressed.
 
@@ -661,9 +661,7 @@ New command-line flags control HTTP exposure (the config file is **unchanged** �
 | Flag           | Default        | Description (plain language)                |
 | -------------- | -------------- | ------------------------------------------- |
 | `--transport`  | `stdio`        | Which doors to open: `stdio` for the desktop AI app only; `http` for browser/phone/cloud only; `both` for both (recommended: let the desktop AI app open it for you). |
-| `--http-host`  | `127.0.0.1`    | Which machine the HTTP window "binds to". Default `127.0.0.1` = only your own computer can reach it (safest). Usually leave it; change only to let LAN/other devices connect (has security risk). |
-| `--http-port`  | `8082`         | The window's "door number". Default 8082; change it (e.g. 9000) if another program already uses 8082. |
-| `--http-path`  | `/dynamic-mcp` | The window's "room name". The address you type in the client must end with it, e.g. `http://127.0.0.1:8082/dynamic-mcp`. |
+| `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | The full HTTP "address" in `host:port/path` form: `host` = which machine it binds to (default `127.0.0.1` = only your computer, safest; change only to let LAN/other devices connect, has security risk); `port` = the "door number" (default 8082; change it e.g. 9000 if taken); `path` = the "room name" (default `/dynamic-mcp`; the client address must end with it, e.g. `http://127.0.0.1:8082/dynamic-mcp`). |
 | `--no-evict`   | `false`        | Only valid with `--transport http`. "Locks" the current plain http instance: it tells a future `both` started on the same port "don't kill me", so that `both` runs stdio only and leaves HTTP off — the two coexist peacefully. Passing it with `--transport both` or `stdio` errors out immediately. |
 
 ### Usage
@@ -676,14 +674,14 @@ dmcp --transport http /path/to/dynamic-mcp.json
 dmcp --transport both /path/to/dynamic-mcp.json
 
 # Bind on all interfaces, custom port/path:
-dmcp --transport http --http-host 0.0.0.0 --http-port 9000 --http-path /mcp /path/to/dynamic-mcp.json
+dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 ```
 
 When `--transport http` or `both` is used, the facade is served at `http://<host>:<port><path>` (e.g. `http://127.0.0.1:8082/dynamic-mcp`).
 
 > 💡 **What URL to type in the web LLM (important)**:
-> - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly your `--http-path` value — **do not add or remove a `/mcp` prefix or suffix**.
-> - Example: with `--http-path /dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
+> - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly the `path` part of your `--http-endpoint`'s `host:port/path` — **do not add or remove a `/mcp` prefix or suffix**.
+> - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
 > - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
 > - If the console is completely empty after starting, don't panic: v1.6.0 server mode is silent by default (see "Troubleshooting → Logging" below); as long as you don't get "connection refused", it is listening.
 
@@ -721,7 +719,7 @@ dmcp --transport both /path/to/dynamic-mcp.json
 
 ## v1.8.0 new: singleton and double-launch detection
 
-When you start dynamic-mcp with `--transport http` or `both`, it **first checks whether another dynamic-mcp is already running on the same HTTP endpoint (`--http-host` + `--http-port` + `--http-path`)**. This prevents silent failure or port conflicts from "two instances fighting over one port". In plain language:
+When you start dynamic-mcp with `--transport http` or `both`, it **first checks whether another dynamic-mcp is already running on the same HTTP endpoint (`--http-endpoint`)**. This prevents silent failure or port conflicts from "two instances fighting over one port". In plain language:
 
 ### Why detect (plain language)
 
@@ -742,11 +740,11 @@ When you start dynamic-mcp with `--transport http` or `both`, it **first checks 
 
 ### The address your LLM client uses must match in three places
 
-Whether you "reuse the existing instance" or "the new both takes over the port", the address your client (web LLM / desktop app) connects to must exactly match the startup flags `--http-host` / `--http-port` / `--http-path`:
+Whether you "reuse the existing instance" or "the new both takes over the port", the address your client (web LLM / desktop app) connects to must exactly match the startup flag `--http-endpoint`:
 
-- Startup command: `dmcp --transport both --http-host 127.0.0.1 --http-port 8082 --http-path /dynamic-mcp config.json`
+- Startup command: `dmcp --transport both --http-endpoint 127.0.0.1:8082/dynamic-mcp config.json`
 - The LLM's MCP config must also say: `http://127.0.0.1:8082/dynamic-mcp`
-- All three (`--http-host` / `--http-port` / `--http-path`) must agree pairwise, otherwise it's a 404 / connection failure.
+- The `host` / `port` / `path` inside `--http-endpoint` must correspond to the MCP config address, otherwise it's a 404 / connection failure.
 
 ### What you should do (checklist)
 

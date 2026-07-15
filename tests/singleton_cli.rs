@@ -16,8 +16,8 @@ fn no_evict_rejected_without_http_transport() {
                 "--transport",
                 transport,
                 "--no-evict",
-                "--http-port",
-                "38082",
+                "--http-endpoint",
+                "127.0.0.1:38082/dynamic-mcp",
                 "tests/fixtures/singleton_dummy.json",
             ])
             .output()
