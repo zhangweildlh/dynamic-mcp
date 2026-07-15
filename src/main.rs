@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 use watcher::ConfigWatcher;
 
