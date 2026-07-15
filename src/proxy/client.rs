@@ -44,7 +44,7 @@ impl ModularMcpClient {
         let config_to_use = config.clone();
         let needs_oauth = config.needs_oauth();
         let transport_timeout = if needs_oauth {
-            Duration::from_secs(120) // OAuth requires user interaction
+            Duration::from_secs(300) // OAuth requires user interaction (v1.8.2: 120s → 300s)
         } else {
             Duration::from_secs(5)
         };
