@@ -122,22 +122,103 @@ impl HttpFacadeHandler {
                     None => Err("Missing required parameter: group".to_string()),
                     Some(g) => match client.list_tools(g) {
                         Ok(tools) => {
-                            let tools_json: Vec<_> = tools
+                            let mode = arguments
+                                .get("mode")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("full");
+                            let include_schema = arguments
+                                .get("include_schema")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            let page = arguments
+                                .get("page")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(1)
+                                .max(1) as usize;
+                            let page_size = arguments
+                                .get("page_size")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            let land_to_file = arguments
+                                .get("land_to_file")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let capabilities = arguments
+                                .get("capabilities")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            let compact = mode == "compact";
+
+                            // opt-in x-capabilities：取该组的 capability_tags（W5D）。
+                            let tags: Vec<String> = if capabilities {
+                                client
+                                    .list_groups()
+                                    .into_iter()
+                                    .find(|gi| gi.name == g)
+                                    .map(|gi| gi.capability_tags)
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+
+                            let mut items: Vec<serde_json::Value> = tools
                                 .iter()
                                 .map(|tool| {
-                                    let mut schema = tool.input_schema.clone();
-                                    if let Some(obj) = schema.as_object_mut() {
-                                        obj.remove("$schema");
-                                    }
-                                    json!({
+                                    let mut obj = json!({
                                         "name": tool.name,
                                         "description": tool.description,
-                                        "inputSchema": schema
-                                    })
+                                    });
+                                    if include_schema && !compact {
+                                        let mut schema = tool.input_schema.clone();
+                                        if let Some(o) = schema.as_object_mut() {
+                                            o.remove("$schema");
+                                        }
+                                        obj["inputSchema"] = schema;
+                                    }
+                                    if capabilities {
+                                        obj["x-capabilities"] = serde_json::Value::Array(
+                                            tags.iter()
+                                                .map(|t| serde_json::Value::String(t.clone()))
+                                                .collect(),
+                                        );
+                                    }
+                                    obj
                                 })
                                 .collect();
-                            Ok(serde_json::to_string_pretty(&tools_json)
-                                .unwrap_or_else(|_| "[]".to_string()))
+
+                            // 分页：page_size>0 返回包装 {tools,total,page,page_size,has_more}；
+                            // page_size==0（默认）返回扁平数组，与旧输出逐字节一致。
+                            let output: serde_json::Value = if page_size > 0 {
+                                let total = items.len();
+                                let start = (page - 1) * page_size;
+                                let end = std::cmp::min(start + page_size, total);
+                                let slice: Vec<serde_json::Value> = if start < total {
+                                    items.drain(start..end).collect()
+                                } else {
+                                    Vec::new()
+                                };
+                                let has_more = end < total;
+                                json!({
+                                    "tools": slice,
+                                    "total": total,
+                                    "page": page,
+                                    "page_size": page_size,
+                                    "has_more": has_more
+                                })
+                            } else {
+                                serde_json::Value::Array(items)
+                            };
+
+                            if land_to_file {
+                                match write_dynamic_tools_file(&output) {
+                                    Ok(path) => Ok(path),
+                                    Err(e) => Err(format!("Failed to write tools file: {e}")),
+                                }
+                            } else {
+                                Ok(serde_json::to_string_pretty(&output)
+                                    .unwrap_or_else(|_| "[]".to_string()))
+                            }
                         }
                         Err(e) => Err(format!("Failed to list tools: {e}")),
                     },
@@ -250,6 +331,31 @@ fn get_tools_schema(group_names: &[String]) -> serde_json::Value {
                 "type": "string",
                 "description": "The name of the MCP group to get tools from",
                 "enum": group_names
+            },
+            "mode": {
+                "type": "string",
+                "description": "Output mode: 'full' (name + description + inputSchema, default) or 'compact' (name + description only, schema omitted).",
+                "enum": ["full", "compact"]
+            },
+            "include_schema": {
+                "type": "boolean",
+                "description": "Include inputSchema in output. Default true. Has no effect in compact mode."
+            },
+            "page": {
+                "type": "integer",
+                "description": "1-based page number for pagination. Default 1."
+            },
+            "page_size": {
+                "type": "integer",
+                "description": "Items per page. 0 (default) returns all tools as a flat array (no pagination wrapper)."
+            },
+            "land_to_file": {
+                "type": "boolean",
+                "description": "If true, write the result to a JSON file and return its absolute path instead of inline JSON. Default false."
+            },
+            "capabilities": {
+                "type": "boolean",
+                "description": "If true, attach an 'x-capabilities' array (group-level tags such as http/sse/stdio/oauth) to each tool. Default false."
             }
         },
         "required": ["group"]
@@ -310,6 +416,72 @@ fn result_err(text: String) -> CallToolResult {
         structured_content: None,
         is_error: Some(true),
         meta: None,
+    }
+}
+
+/// Resolve the directory for on-demand tool-artifact files (e.g. land_to_file
+/// output). Mirrors the log directory policy: next to the executable when
+/// writable, otherwise `%LOCALAPPDATA%/dynamic-mcp`.
+fn artifact_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.exists() {
+                let probe = dir.join(format!(".dynamic-mcp-writable-{}.tmp", std::process::id()));
+                if std::fs::File::create(&probe).is_ok() {
+                    let _ = std::fs::remove_file(&probe);
+                    return dir.to_path_buf();
+                }
+            }
+        }
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("dynamic-mcp")
+}
+
+/// Serialize `value` to a uniquely-named JSON file and return its absolute
+/// path. Best-effort cleans up stale `dynamic-tools-*.json` (>72h) in the same
+/// directory. Used by get_dynamic_tools `land_to_file`.
+pub(crate) fn write_dynamic_tools_file(value: &serde_json::Value) -> std::io::Result<String> {
+    let dir = artifact_dir();
+    std::fs::create_dir_all(&dir)?;
+    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%3f").to_string();
+    let path = dir.join(format!("dynamic-tools-{}-{}.json", std::process::id(), ts));
+    let content = serde_json::to_string_pretty(value).unwrap_or_else(|_| "[]".to_string());
+    std::fs::write(&path, content)?;
+    cleanup_dynamic_tools_artifacts(&dir);
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Remove `dynamic-tools-*.json` artifacts older than 72h (best-effort).
+fn cleanup_dynamic_tools_artifacts(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(72 * 3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let p = entry.path();
+        let is_json = p.extension().and_then(|s| s.to_str()) == Some("json");
+        let is_prefixed = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.starts_with("dynamic-tools-"))
+            .unwrap_or(false);
+        if !(is_json && is_prefixed) {
+            continue;
+        }
+        if let Ok(meta) = std::fs::metadata(&p) {
+            if let Ok(m) = meta.modified() {
+                if m < cutoff {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
     }
 }
 

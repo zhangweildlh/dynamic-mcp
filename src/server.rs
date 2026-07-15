@@ -142,6 +142,31 @@ Example usage:
                                     "type": "string",
                                     "description": "The name of the MCP group to get tools from",
                                     "enum": group_names
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "description": "Output mode: 'full' (name + description + inputSchema, default) or 'compact' (name + description only, schema omitted).",
+                                    "enum": ["full", "compact"]
+                                },
+                                "include_schema": {
+                                    "type": "boolean",
+                                    "description": "Include inputSchema in output. Default true. Has no effect in compact mode."
+                                },
+                                "page": {
+                                    "type": "integer",
+                                    "description": "1-based page number for pagination. Default 1."
+                                },
+                                "page_size": {
+                                    "type": "integer",
+                                    "description": "Items per page. 0 (default) returns all tools as a flat array (no pagination wrapper)."
+                                },
+                                "land_to_file": {
+                                    "type": "boolean",
+                                    "description": "If true, write the result to a JSON file and return its absolute path instead of inline JSON. Default false."
+                                },
+                                "capabilities": {
+                                    "type": "boolean",
+                                    "description": "If true, attach an 'x-capabilities' array (group-level tags such as http/sse/stdio/oauth) to each tool. Default false."
                                 }
                             },
                             "required": ["group"]
@@ -239,22 +264,106 @@ Example usage:
                 }
 
                 let client = self.client.read().await;
-                match client.list_tools(group.unwrap()) {
+                let g = group.unwrap();
+                match client.list_tools(g) {
                     Ok(tools) => {
-                        let tools_json: Vec<_> = tools
+                        let mode = arguments
+                            .get("mode")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("full");
+                        let include_schema = arguments
+                            .get("include_schema")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        let page = arguments
+                            .get("page")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(1)
+                            .max(1) as usize;
+                        let page_size = arguments
+                            .get("page_size")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let land_to_file = arguments
+                            .get("land_to_file")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let capabilities = arguments
+                            .get("capabilities")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        let compact = mode == "compact";
+
+                        // opt-in x-capabilities：取该组的 capability_tags（W5D）。
+                        let tags: Vec<String> = if capabilities {
+                            client
+                                .list_groups()
+                                .into_iter()
+                                .find(|gi| gi.name == g)
+                                .map(|gi| gi.capability_tags)
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+
+                        let mut items: Vec<serde_json::Value> = tools
                             .iter()
                             .map(|tool| {
-                                let mut schema = tool.input_schema.clone();
-                                if let Some(obj) = schema.as_object_mut() {
-                                    obj.remove("$schema");
-                                }
-                                json!({
+                                let mut obj = json!({
                                     "name": tool.name,
                                     "description": tool.description,
-                                    "inputSchema": schema
-                                })
+                                });
+                                if include_schema && !compact {
+                                    let mut schema = tool.input_schema.clone();
+                                    if let Some(o) = schema.as_object_mut() {
+                                        o.remove("$schema");
+                                    }
+                                    obj["inputSchema"] = schema;
+                                }
+                                if capabilities {
+                                    obj["x-capabilities"] = serde_json::Value::Array(
+                                        tags.iter()
+                                            .map(|t| serde_json::Value::String(t.clone()))
+                                            .collect(),
+                                    );
+                                }
+                                obj
                             })
                             .collect();
+
+                        // 分页：page_size>0 返回包装 {tools,total,page,page_size,has_more}；
+                        // page_size==0（默认）返回扁平数组，与旧输出逐字节一致。
+                        let output: serde_json::Value = if page_size > 0 {
+                            let total = items.len();
+                            let start = (page - 1) * page_size;
+                            let end = std::cmp::min(start + page_size, total);
+                            let slice: Vec<serde_json::Value> = if start < total {
+                                items.drain(start..end).collect()
+                            } else {
+                                Vec::new()
+                            };
+                            let has_more = end < total;
+                            json!({
+                                "tools": slice,
+                                "total": total,
+                                "page": page,
+                                "page_size": page_size,
+                                "has_more": has_more
+                            })
+                        } else {
+                            serde_json::Value::Array(items)
+                        };
+
+                        let text = if land_to_file {
+                            match crate::http::server_handler::write_dynamic_tools_file(&output) {
+                                Ok(path) => path,
+                                Err(e) => format!("Failed to write tools file: {e}"),
+                            }
+                        } else {
+                            serde_json::to_string_pretty(&output)
+                                .unwrap_or_else(|_| "[]".to_string())
+                        };
 
                         JsonRpcResponse {
                             jsonrpc: "2.0".to_string(),
@@ -263,7 +372,7 @@ Example usage:
                                 "content": [
                                     {
                                         "type": "text",
-                                        "text": serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string())
+                                        "text": text
                                     }
                                 ]
                             })),
