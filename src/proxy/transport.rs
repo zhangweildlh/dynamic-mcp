@@ -576,37 +576,44 @@ impl Transport {
             } => {
                 let mut final_headers = headers.clone().unwrap_or_default();
 
-                // Attempt OAuth: with explicit client_id, or via dynamic registration
-                let oauth_client = OAuthClient::new()?;
-                match oauth_client
-                    .authenticate(
-                        server_name,
-                        url,
-                        oauth_client_id.as_deref(),
-                        oauth_scopes.clone(),
-                    )
-                    .await
-                {
-                    Ok(token) => {
-                        final_headers.insert(
-                            "Authorization".to_string(),
-                            format!("Bearer {}", token.access_token),
-                        );
-                        tracing::debug!("Added OAuth token to HTTP transport for {}", server_name);
-                    }
-                    Err(e) => {
-                        if oauth_client_id.is_some() {
-                            // Explicit client_id was provided but auth failed — propagate error
-                            return Err(e);
-                        }
-                        // No client_id in config — OAuth not required, skip silently
-                        tracing::debug!(
-                            "OAuth not available for {} (no client_id, discovery failed): {}",
+                // Attempt OAuth only when actually required. When a static
+                // `Authorization` header is already configured, needs_oauth() is
+                // false → skip discovery and connect directly (no needless probe).
+                if config.needs_oauth() {
+                    let oauth_client = OAuthClient::new()?;
+                    match oauth_client
+                        .authenticate(
                             server_name,
-                            e
-                        );
+                            url,
+                            oauth_client_id.as_deref(),
+                            oauth_scopes.clone(),
+                        )
+                        .await
+                    {
+                        Ok(token) => {
+                            final_headers.insert(
+                                "Authorization".to_string(),
+                                format!("Bearer {}", token.access_token),
+                            );
+                            tracing::debug!(
+                                "Added OAuth token to HTTP transport for {}",
+                                server_name
+                            );
+                        }
+                        Err(e) => {
+                            if oauth_client_id.is_some() {
+                                // Explicit client_id was provided but auth failed — propagate error
+                                return Err(e);
+                            }
+                            // No client_id in config — OAuth not required, skip silently
+                            tracing::debug!(
+                                "OAuth not available for {} (no client_id, discovery failed): {}",
+                                server_name,
+                                e
+                            );
+                        }
                     }
-                }
+                } // end if config.needs_oauth()
 
                 let transport = HttpTransport::new(url, Some(&final_headers)).await?;
                 Ok(Transport::Http(transport))
@@ -620,35 +627,40 @@ impl Transport {
             } => {
                 let mut final_headers = headers.clone().unwrap_or_default();
 
-                // Attempt OAuth: with explicit client_id, or via dynamic registration
-                let oauth_client = OAuthClient::new()?;
-                match oauth_client
-                    .authenticate(
-                        server_name,
-                        url,
-                        oauth_client_id.as_deref(),
-                        oauth_scopes.clone(),
-                    )
-                    .await
-                {
-                    Ok(token) => {
-                        final_headers.insert(
-                            "Authorization".to_string(),
-                            format!("Bearer {}", token.access_token),
-                        );
-                        tracing::debug!("Added OAuth token to SSE transport for {}", server_name);
-                    }
-                    Err(e) => {
-                        if oauth_client_id.is_some() {
-                            return Err(e);
-                        }
-                        tracing::debug!(
-                            "OAuth not available for {} (no client_id, discovery failed): {}",
+                // Attempt OAuth only when actually required (see Http branch above).
+                if config.needs_oauth() {
+                    let oauth_client = OAuthClient::new()?;
+                    match oauth_client
+                        .authenticate(
                             server_name,
-                            e
-                        );
+                            url,
+                            oauth_client_id.as_deref(),
+                            oauth_scopes.clone(),
+                        )
+                        .await
+                    {
+                        Ok(token) => {
+                            final_headers.insert(
+                                "Authorization".to_string(),
+                                format!("Bearer {}", token.access_token),
+                            );
+                            tracing::debug!(
+                                "Added OAuth token to SSE transport for {}",
+                                server_name
+                            );
+                        }
+                        Err(e) => {
+                            if oauth_client_id.is_some() {
+                                return Err(e);
+                            }
+                            tracing::debug!(
+                                "OAuth not available for {} (no client_id, discovery failed): {}",
+                                server_name,
+                                e
+                            );
+                        }
                     }
-                }
+                } // end if config.needs_oauth()
 
                 let transport = SseTransport::new(url, Some(&final_headers)).await?;
                 Ok(Transport::Sse(transport))
