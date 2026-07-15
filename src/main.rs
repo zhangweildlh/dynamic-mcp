@@ -11,8 +11,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use proxy::ModularMcpClient;
 use server::ModularMcpServer;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::RwLock;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 use watcher::ConfigWatcher;
 
@@ -49,6 +53,14 @@ struct Cli {
     /// effect with `--transport both` or `--transport stdio`.
     #[arg(long, default_value_t = false)]
     no_evict: bool,
+
+    /// Log level: trace/debug/info/warn/error. Invalid value falls back to warn.
+    /// When set: every mode writes a log file next to the executable
+    /// (falls back to data_local_dir/dynamic-mcp if not writable);
+    /// http mode also prints to stderr. stdio/both modes stay silent on
+    /// stderr to protect the JSON-RPC channel.
+    #[arg(long, value_name = "LEVEL")]
+    log: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +108,80 @@ fn get_config_path(cli_arg: Option<String>) -> Option<(String, &'static str)> {
         }
     } else {
         None
+    }
+}
+
+/// Parse a `--log` level string into a `LevelFilter`, falling back to WARN.
+fn parse_level(s: &str) -> LevelFilter {
+    match s.to_ascii_lowercase().as_str() {
+        "trace" => LevelFilter::TRACE,
+        "debug" => LevelFilter::DEBUG,
+        "info" => LevelFilter::INFO,
+        "warn" => LevelFilter::WARN,
+        "error" => LevelFilter::ERROR,
+        _ => LevelFilter::WARN,
+    }
+}
+
+/// Resolve the directory for log/tool-dump files: next to the executable,
+/// falling back to `data_local_dir/dynamic-mcp` when the exe dir is missing
+/// or not writable (e.g. Program Files under restrictive ACLs / EDR).
+fn log_dir() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.exists() {
+                // exists() ≠ writable: probe with a temp file.
+                let probe = dir.join(format!(".dynamic-mcp-writable-{}.tmp", std::process::id()));
+                if std::fs::File::create(&probe).is_ok() {
+                    let _ = std::fs::remove_file(&probe);
+                    return dir.to_path_buf();
+                }
+            }
+        }
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("dynamic-mcp")
+}
+
+/// Delete `dynamic-*.log` files whose mtime is older than `max_age`,
+/// skipping the currently-open log file. Failures are silently ignored.
+fn cleanup_old_logs(dir: &Path, current: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("skip unreadable log entry: {}", e);
+                continue;
+            }
+        };
+        let p = entry.path();
+        if p == *current {
+            continue;
+        }
+        if p.extension().and_then(|s| s.to_str()) != Some("log") {
+            continue;
+        }
+        if p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| !n.starts_with("dynamic-"))
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        if let Ok(meta) = std::fs::metadata(&p) {
+            if let Ok(m) = meta.modified() {
+                if m < cutoff {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
     }
 }
 
@@ -148,6 +234,7 @@ async fn main() -> Result<()> {
                 cli.transport,
                 cli.http_endpoint,
                 cli.no_evict,
+                cli.log,
             )
             .await
         }
@@ -160,7 +247,59 @@ async fn run_server(
     transport: TransportMode,
     http_endpoint: String,
     no_evict: bool,
+    log: Option<String>,
 ) -> Result<()> {
+    // ---- Logging (v1.8.2 hybrid scheme) ----
+    // No `--log`: http mode defaults to WARN on stderr; stdio/both silent; no file.
+    // With `--log <LEVEL>`: every mode writes a log file; http also prints to
+    // stderr. stdio/both never print to stderr (protect JSON-RPC). File path =
+    // next to the executable, or data_local_dir/dynamic-mcp if not writable.
+    let log_filter = log.as_deref().map(parse_level).unwrap_or(LevelFilter::WARN);
+    let mut layers: Vec<
+        Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+    > = Vec::new();
+    let mut log_path: Option<PathBuf> = None;
+
+    if log.is_some() {
+        let dir = log_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%3f").to_string();
+        let path = dir.join(format!("dynamic-{}-{}.log", std::process::id(), ts));
+        if let Ok(file) = std::fs::File::create(&path) {
+            log_path = Some(path);
+            layers.push(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(Mutex::new(file))
+                    .with_filter(log_filter)
+                    .boxed(),
+            );
+        }
+        // Cleanup: reuse the dir resolved above (do NOT re-call log_dir()).
+        if let Some(ref p) = log_path {
+            let cleanup_dir = dir.clone();
+            let cleanup_path = p.clone();
+            tokio::spawn(async move {
+                cleanup_old_logs(
+                    &cleanup_dir,
+                    &cleanup_path,
+                    std::time::Duration::from_secs(72 * 3600),
+                );
+            });
+        }
+    }
+
+    if matches!(transport, TransportMode::Http) {
+        layers.push(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(log_filter)
+                .boxed(),
+        );
+    }
+
+    let _ = tracing_subscriber::registry().with(layers).try_init();
+
     // Early singleton / double-launch detection. This may:
     //  - SelfTerminate a redundant `http` after 8s (A1/A3),
     //  - Evict an old `http` and delay our own HTTP by 8s (B1),
