@@ -161,7 +161,28 @@ impl HttpFacadeHandler {
 
         match text_result {
             Ok(text) => result_ok(text),
-            Err(msg) => result_err(msg),
+            // W5F: 结构化错误信封。仍为 CallToolResult{is_error:true}（非 JSON-RPC
+            // error），宿主解析 content 文本即可拿到 {ok,code,message,cause}。
+            // `code` 是信封内字符串字段，不是 JSON-RPC error.code（i32）。
+            Err(msg) => {
+                let code = if msg.contains("timed out") {
+                    "timeout"
+                } else if msg.contains("Tool execution failed") {
+                    "upstream_error"
+                } else if msg.contains("Missing required") {
+                    "bad_request"
+                } else {
+                    "tool_error"
+                };
+                // cause 预留字段，暂固定为 null，后续可扩展为原始错误链。
+                let envelope = serde_json::json!({
+                    "ok": false,
+                    "code": code,
+                    "message": msg,
+                    "cause": null
+                });
+                result_err(serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| msg))
+            }
         }
     }
 }
