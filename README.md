@@ -72,7 +72,7 @@ dynamic-mcp 能把这些本地工具**接一根「电话线」，变成远处也
 
 ## 关于本分支（fork）使用 GitHub Actions 自行构建的说明
 
-> **说明**：上游仓库（[asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)）较长时间未更新。为了不等待上游发版即可使用本 fork 的新功能（含 HTTP 门面、端点单例检测等，截止 **v1.8.1**），本 fork 通过 **GitHub Actions** 自行构建二进制——具体由 Release 工作流在推送 `v*` 标签时触发。构建产物为跨平台二进制（含 Windows 的 `dmcp.exe`），作为 Release 资产（assets）发布于本 fork 的 Releases 页面。
+> **说明**：上游仓库（[asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)）较长时间未更新。为了不等待上游发版即可使用本 fork 的新功能（含 HTTP 门面、端点单例检测、日志混合方案等，截止 **v1.8.2**），本 fork 通过 **GitHub Actions** 自行构建二进制——具体由 Release 工作流在推送 `v*` 标签时触发。构建产物为跨平台二进制（含 Windows 的 `dmcp.exe`），作为 Release 资产（assets）发布于本 fork 的 Releases 页面。
 >
 > 这些构建**不会**发布到 crates.io / PyPI，**请勿使用 `cargo install` / `pip install` / `uvx` 安装 dynamic-mcp**；请直接从本 fork 的 Releases 页面下载二进制，或从源码编译（见下方「快速开始 → 安装」）。
 
@@ -492,6 +492,7 @@ Config details:
 | `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
 | `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | 对外窗口的「完整地址」：`host:port/path`（IPv6 用 `[host]:port/path`）。客户端连接地址要和这里完全一致，例如 `http://127.0.0.1:8082/dynamic-mcp`。默认即可，端口被占用就改（如 `127.0.0.1:9000/dynamic-mcp`）。 |
 | `--no-evict`    | `false`         | 仅对 `--transport http` 有效。给当前的纯 http 实例"上锁"：告诉将来同端口启动的 `both` 实例"别强杀我"，让 `both` 只开 stdio、HTTP 关掉，二者和平共存。配 `--transport both` 或 `stdio` 时会直接报错退出。 |
+| `--log`         | （无）          | 日志级别：`trace` / `debug` / `info` / `warn` / `error`（非法值回退 `warn`）。**不传则与 v1.8.1 一致**——服务器模式完全静默。**传了则全模式写日志文件**（`dynamic-<pid>-<时间>.log`，程序同目录，72h 自动清理），http 模式额外输出到 stderr，stdio/both 仍保持 stderr 静默以保护 JSON-RPC。 |
 
 ### 使用方法
 
@@ -516,7 +517,7 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 > - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `host:port` 之后的那段 path（如 `/dynamic-mcp`），**前后都不要再加减 `/mcp`**。
 > - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
-> - 启动后控制台若毫无输出也别慌：v1.8.1 服务器模式默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。
+> - 启动后控制台若毫无输出也别慌：v1.8.2 服务器模式在不传 `--log` 时默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。传 `--log debug` 可同时写日志文件和（http 模式下）stderr 输出。
 
 > 💡 **WorkBuddy / OpenCode / Claude Desktop 里地址怎么填**：
 > 这些桌面客户端通常会以两种方式和 dmcp 协作：
@@ -526,9 +527,9 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 >   - 客户端与 dmcp 同机时 `host` 用 `127.0.0.1` 即可；若 dmcp 跑在另一台机器，填那台的局域网 IP（且 dmcp 需用 `0.0.0.0` 或该 IP 作 host）。
 >   - 同样**不要额外加 `/mcp` 前缀**，否则 404。
 
-## 与上游仓库（v 1.5.0）相比较，本 Fork 仓库（截止v 1.8.1）新增的功能
+## 与上游仓库（v 1.5.0）相比较，本 Fork 仓库（截止v 1.8.2）新增的功能
 
-> 上游仓库（[asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)）停留在 v1.5.0 附近，本 fork 在此基础上持续迭代。以下按**功能**汇总本 fork（v1.6.0 → v1.8.1）相比上游新增的能力；同一能力在多版本演进的，以最终形态为准（后续版本覆盖前序版本，不重复列举版本号）。
+> 上游仓库（[asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)）停留在 v1.5.0 附近，本 fork 在此基础上持续迭代。以下按**功能**汇总本 fork（v1.6.0 → v1.8.2）相比上游新增的能力；同一能力在多版本演进的，以最终形态为准（后续版本覆盖前序版本，不重复列举版本号）。
 
 ### 1. Streamable HTTP 门面与多模式传输
 
@@ -583,6 +584,46 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 
 **应用场景**：你不装 Rust 工具链，也能从 [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) 下载 `dmcp` 直接用；而上游仓库没有对应的最新二进制可用。
 
+### 6. `--log` 日志混合方案（v1.8.2 新增）
+
+v1.8.0 曾将服务器模式日志简化为「一律静默」，排查问题不便。v1.8.2 引入 `--log <LEVEL>` 参数，用「文件落盘 + http 额外 stderr」的混合方案兼顾排查需求与 JSON-RPC 协议安全：
+
+- **不传 `--log`**：与 v1.8.1 完全一致——服务器模式静默，不写文件、不输出 stderr。
+- **传 `--log <LEVEL>`**：全模式写日志文件 `dynamic-<pid>-<时间戳>.log`（程序同目录，72h 自动清理）；http 模式额外输出到 stderr；stdio / both 保持 stderr 静默。
+- `LEVEL`：`trace` / `debug` / `info` / `warn` / `error`（非法值回退 `warn`）。
+
+**应用场景**：http 模式排查连接问题时用 `dmcp --transport http --log debug config.json`，终端实时看日志、同时落盘留存；stdio 模式用 `--log debug` 只写文件、不污染 JSON-RPC。
+
+### 7. `get_dynamic_tools` 增强参数（v1.8.2 新增）
+
+`get_dynamic_tools` 元工具新增 6 个可选参数，**默认值保持与 v1.8.1 输出逐字节一致**：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `mode` | `full` | `compact` 返回 name + 完整描述，省略 `inputSchema` |
+| `include_schema` | `true` | 设为 `false` 去掉 `inputSchema` |
+| `page` | `1` | 分页页码 |
+| `page_size` | `0` | `>0` 时返回分页包装 `{tools, total, page, page_size, has_more}`；`0` 返回扁平数组 |
+| `land_to_file` | `false` | `true` 时写 JSON 文件并返回绝对路径（72h 自动清理） |
+| `capabilities` | `false` | `true` 时附加 `x-capabilities` 能力标签数组 |
+
+**应用场景**：工具数量多时用 `compact` + `page_size` 分页查看；需要存档时用 `land_to_file` 落盘；需要判断传输类型时用 `capabilities`。
+
+### 8. `list_groups` 元数据增强 + 工具调用错误结构化（v1.8.2 新增）
+
+- **`list_groups` 增强**：返回的每个分组新增 `tool_count`（工具数量）和 `capability_tags`（能力标签，如 `stdio` / `http` / `sse` / `oauth`）。无 `deny_unknown_fields`，旧客户端兼容。
+- **错误结构化信封**：`call_dynamic_tool` 的错误返回改为结构化 JSON（仍为 `CallToolResult{is_error:true}`，非 JSON-RPC error）：
+  ```json
+  { "ok": false, "code": "timeout", "message": "原始错误信息", "cause": null }
+  ```
+  `code` 映射：超时→`timeout` / 上游失败→`upstream_error` / 参数缺失→`bad_request` / 其他→`tool_error`。
+
+### 9. OAuth 修复（v1.8.2 新增）
+
+- **回调地址 `localhost` → `127.0.0.1`**：OAuth 回调监听绑定 `127.0.0.1`，但重定向 URI 用了 `localhost`；某些系统 `localhost` 解析到 `::1`（IPv6），导致浏览器回调失败。现统一为 `127.0.0.1`。
+- **静态 `Authorization` 头跳过 OAuth discovery**：已配置静态 `Authorization` 头的服务器不再做无谓的 OAuth 发现探测，直接用静态头连接。
+- **OAuth 传输创建超时 120s → 300s**：给浏览器授权更从容的时间窗口。
+
 ## 故障排查
 
 ### 服务器连接问题
@@ -602,14 +643,33 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 
 ### 日志与「控制台没有输出」（重要）
 
-在 **v1.8.1** 中，运行服务器（`--transport stdio` / `http` / `both`）时，**控制台默认是空的、没有任何日志输出**——这不是程序崩溃，而是当前版本的设计行为：
+在 **v1.8.2** 中，运行服务器（`--transport stdio` / `http` / `both`）时，日志行为取决于是否传了 `--log` 参数：
 
-- 只有 `import` 子命令会初始化日志系统；**运行服务器时根本没有初始化 tracing subscriber**，因此无论你是否设置 `RUST_LOG` 环境变量，服务器模式都不会打印任何日志（连 INFO 级的「已在 xxx 监听」提示都会被抑制）。
-- **当前构建没有 `--log-level` / `-v` 参数，无法用命令行开关日志级别。** 该参数曾在 v1.7.0 提供（当时与 `RUST_LOG` 配合：http/both 默认 `warn`、stdio 强制静默以保护 JSON-RPC），但在 **v1.8.0** 的重构中被移除。
-- **为何移除**：stdio 模式必须保证 stderr/stdout 干净，否则会污染 JSON-RPC 协议、导致客户端解析失败。v1.7.0 用「按传输模式分别开关日志」的复杂逻辑来兼顾，v1.8.0 简化为「服务器模式一律静默」——既彻底规避污染风险，也省去维护开关的成本。代价是：**当前版本无法通过命令行或 `RUST_LOG` 调高 http/both 模式的日志详细度**（http 用户排查问题时，只能从客户端侧或进程存活状态判断，详见下方「怎样判断它在运行」）。
-- 怎样判断它真的在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已经在监听了，只是你填的**路径不对**（见上方「参数 → --http-endpoint」的 404 提醒）。
+#### 不传 `--log`（默认，与 v1.8.1 一致）
 
-> ⚠️ **别被空控制台骗了**：看到终端里一行都没有，以为没启动成功——其实它正安静地监听在 `127.0.0.1:8082`。「监听成功」那行日志只是被屏蔽了而已。
+- **控制台完全静默**——这不是程序崩溃，而是设计行为。
+- 服务器模式不初始化 tracing subscriber，因此无论是否设置 `RUST_LOG`，都不会打印任何日志。
+- 怎样判断它在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已在监听，只是路径不对。
+
+> ⚠️ **别被空控制台骗了**：看到终端一行都没有，以为没启动成功——其实它正安静监听在 `127.0.0.1:8082`。
+
+#### 传了 `--log <LEVEL>`
+
+- **全模式写日志文件**：文件名 `dynamic-<pid>-<YYYYMMDD-HHMMSSmmm>.log`，写入程序同目录（若只读则回退到 `data_local_dir/dynamic-mcp/`）。
+- **http 模式额外输出到 stderr**：方便终端实时查看。
+- **stdio / both 仍保持 stderr 静默**：避免污染 JSON-RPC 协议。
+- **自动清理**：启动时清除 `dynamic-*.log` 中修改时间超过 72 小时的旧文件（当前运行的不受影响）。
+- `LEVEL` 可选 `trace` / `debug` / `info` / `warn` / `error`；非法值回退 `warn`。
+
+```bash
+# 排查 http 模式问题（日志同时写文件 + stderr）：
+dmcp --transport http --log debug /path/to/dynamic-mcp.json
+
+# stdio 模式排查（只写文件，stderr 仍静默）：
+dmcp --transport stdio --log debug /path/to/dynamic-mcp.json
+```
+
+> 💡 **v1.8.0 曾移除 `--log-level` 参数的原因**：stdio 模式必须保证 stderr 干净，否则会污染 JSON-RPC。v1.8.2 的 `--log` 用「文件落盘 + http 额外 stderr」的混合方案兼顾了排查需求与协议安全。
 
 ### OAuth 认证问题
 

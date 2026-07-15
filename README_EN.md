@@ -72,7 +72,7 @@ The full technical explanation for developers follows (you don't need it to get 
 
 ## About this fork (builds via GitHub Actions)
 
-> **Note**: the upstream repository ([asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)) has not been updated for an extended period. To use this fork's new features (including the HTTP facade, endpoint singleton detection, etc., up to **v1.8.1**) without waiting for an upstream release, this fork builds its own binaries through **GitHub Actions** — specifically, the Release workflow triggered when a `v*` tag is pushed. The build artifacts are cross-platform binaries (including Windows `dmcp.exe`), published as release assets on this fork's Releases page.
+> **Note**: the upstream repository ([asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)) has not been updated for an extended period. To use this fork's new features (including the HTTP facade, endpoint singleton detection, hybrid logging, etc., up to **v1.8.2**) without waiting for an upstream release, this fork builds its own binaries through **GitHub Actions** — specifically, the Release workflow triggered when a `v*` tag is pushed. The build artifacts are cross-platform binaries (including Windows `dmcp.exe`), published as release assets on this fork's Releases page.
 >
 > These builds are **not** published to crates.io / PyPI. **Do not use `cargo install` / `pip install` / `uvx` to install dynamic-mcp**; download the binary directly from this fork's Releases page, or compile from source (see "Quick Start → Installation" below).
 
@@ -492,6 +492,7 @@ New command-line flags control HTTP exposure (the config file is **unchanged** �
 | `--transport`   | `stdio`                   | Which doors to open: `stdio` for the desktop AI app only; `http` for browser/phone/cloud only; `both` for both (recommended: let the desktop AI app open it for you). |
 | `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | The full HTTP "address" in `host:port/path` form (IPv6 uses `[host]:port/path`). The client's connection address must match this exactly, e.g. `http://127.0.0.1:8082/dynamic-mcp`. Keep the default; change it only if the port is taken (e.g. `127.0.0.1:9000/dynamic-mcp`). |
 | `--no-evict`    | `false`                   | Only valid with `--transport http`. "Locks" the current plain http instance: it tells a future `both` started on the same port "don't kill me", so that `both` runs stdio only and leaves HTTP off — the two coexist peacefully. Passing it with `--transport both` or `stdio` errors out immediately. |
+| `--log`         | (none)                    | Log level: `trace` / `debug` / `info` / `warn` / `error` (invalid falls back to `warn`). **Omitting it is identical to v1.8.1** — server mode is fully silent. **Passing it writes a log file** (`dynamic-<pid>-<timestamp>.log`, in the executable's directory, auto-cleaned after 72h) in all modes; http mode also mirrors to stderr; stdio/both stay stderr-silent to protect JSON-RPC. |
 
 ### Usage
 
@@ -516,7 +517,7 @@ When `--transport http` or `both` is used, the facade is served at `http://<host
 > - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly the `path` part after `host:port` in your `--http-endpoint` (e.g. `/dynamic-mcp`) — **do not add or remove a `/mcp` prefix or suffix**.
 > - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
 > - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
-> - If the console is completely empty after starting, don't panic: v1.8.1 server mode is silent by default (see "Troubleshooting → Logging" below); as long as the browser doesn't say "connection refused", it is listening.
+> - If the console is completely empty after starting, don't panic: v1.8.2 server mode is silent by default when `--log` is not passed (see "Troubleshooting → Logging" below); as long as the browser doesn't say "connection refused", it is listening. Pass `--log debug` to write logs to a file and (in http mode) stderr.
 
 > 💡 **What address to fill in WorkBuddy / OpenCode / Claude Desktop**:
 > These desktop clients typically cooperate with dmcp in two ways:
@@ -526,9 +527,9 @@ When `--transport http` or `both` is used, the facade is served at `http://<host
 >   - When the client and dmcp are on the same machine, `host` can be `127.0.0.1`; if dmcp runs on another machine, fill that machine's LAN IP (and dmcp must use `0.0.0.0` or that IP as host).
 >   - Again **do not add a `/mcp` prefix** or you'll get 404.
 
-## Features added in this fork vs upstream (v1.5.0), up to v1.8.1
+## Features added in this fork vs upstream (v1.5.0), up to v1.8.2
 
-> The upstream repository ([asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)) has stayed around v1.5.0; this fork keeps iterating on top of it. The following summarizes, **by feature**, the capabilities this fork (v1.6.0 → v1.8.1) added beyond upstream. Where a capability evolved across versions, the final form is what counts (later versions override earlier ones; version numbers are not listed repeatedly).
+> The upstream repository ([asyrjasalo/dynamic-mcp](https://github.com/asyrjasalo/dynamic-mcp)) has stayed around v1.5.0; this fork keeps iterating on top of it. The following summarizes, **by feature**, the capabilities this fork (v1.6.0 → v1.8.2) added beyond upstream. Where a capability evolved across versions, the final form is what counts (later versions override earlier ones; version numbers are not listed repeatedly).
 
 ### 1. Streamable HTTP facade and multi-mode transport
 
@@ -583,6 +584,46 @@ Because upstream hasn't released for a long time, this fork builds on its own: w
 
 **Application scenario**: Without installing a Rust toolchain, you can download `dmcp` directly from [Releases](https://github.com/zhangweildlh/dynamic-mcp/releases) and use it; the upstream repo has no corresponding up-to-date binary available.
 
+### 6. `--log` hybrid logging (new in v1.8.2)
+
+v1.8.0 simplified server-mode logging to "always silent", making debugging inconvenient. v1.8.2 introduces `--log <LEVEL>`, using a hybrid approach — file logging for all modes, plus stderr for http only — balancing diagnostics with JSON-RPC protocol safety:
+
+- **Without `--log`**: identical to v1.8.1 — server mode is silent, no file, no stderr.
+- **With `--log <LEVEL>`**: all modes write `dynamic-<pid>-<timestamp>.log` (executable directory, auto-cleaned after 72h); http also mirrors to stderr; stdio/both stay stderr-silent.
+- `LEVEL`: `trace` / `debug` / `info` / `warn` / `error` (invalid falls back to `warn`).
+
+**Application scenario**: Debug http connection issues with `dmcp --transport http --log debug config.json` — real-time stderr plus file archival; debug stdio with `--log debug` — file only, no JSON-RPC pollution.
+
+### 7. `get_dynamic_tools` enhanced parameters (new in v1.8.2)
+
+The `get_dynamic_tools` meta-tool gains 6 optional parameters. **Defaults preserve byte-identical output with v1.8.1:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `mode` | `full` | `compact` returns name + full description, omits `inputSchema` |
+| `include_schema` | `true` | Set `false` to strip `inputSchema` |
+| `page` | `1` | Page number for pagination |
+| `page_size` | `0` | `>0` wraps results as `{tools, total, page, page_size, has_more}`; `0` returns flat array |
+| `land_to_file` | `false` | `true` writes results to a JSON file and returns the absolute path (72h auto-cleanup) |
+| `capabilities` | `false` | `true` attaches `x-capabilities` array (from `GroupInfo.capability_tags`) |
+
+**Application scenario**: Use `compact` + `page_size` to browse many tools in pages; use `land_to_file` to archive; use `capabilities` to inspect transport types.
+
+### 8. `list_groups` metadata enrichment + structured tool-call errors (new in v1.8.2)
+
+- **`list_groups` enhanced**: each group now includes `tool_count` (number of tools) and `capability_tags` (e.g., `stdio` / `http` / `sse` / `oauth`). No `deny_unknown_fields`, so older clients remain compatible.
+- **Structured error envelope**: `call_dynamic_tool` errors now return structured JSON (still via `CallToolResult{is_error:true}`, not JSON-RPC error):
+  ```json
+  { "ok": false, "code": "timeout", "message": "original error message", "cause": null }
+  ```
+  `code` mapping: timed out → `timeout` / upstream failure → `upstream_error` / missing parameter → `bad_request` / other → `tool_error`.
+
+### 9. OAuth fixes (new in v1.8.2)
+
+- **Callback `localhost` → `127.0.0.1`**: the OAuth callback listener binds `127.0.0.1`, but the redirect URI used `localhost`; on some systems `localhost` resolves to `::1` (IPv6), causing the browser redirect to fail. Both sides now use `127.0.0.1`.
+- **Static `Authorization` header skips OAuth discovery**: servers with a static `Authorization` header no longer trigger an unnecessary OAuth discovery round-trip; they connect directly.
+- **OAuth transport creation timeout 120s → 300s**: gives users a more generous window for browser-based authorization.
+
 ## Troubleshooting
 
 ### Server connection issues
@@ -602,14 +643,33 @@ Because upstream hasn't released for a long time, this fork builds on its own: w
 
 ### Logging and "no console output" (important)
 
-In **v1.8.1**, when running the server (`--transport stdio` / `http` / `both`), **the console is empty by default — no log output at all**. This is not a crash; it is the current version's designed behavior:
+In **v1.8.2**, when running the server (`--transport stdio` / `http` / `both`), logging behavior depends on whether `--log` is passed:
 
-- Only the `import` subcommand initializes the logging system; **running the server does not initialize a tracing subscriber at all**. So whether or not you set the `RUST_LOG` environment variable, server mode prints no logs (even the INFO-level "listening on xxx" message is suppressed).
-- **The current build has no `--log-level` / `-v` flag, so log level cannot be toggled from the command line.** That flag existed in v1.7.0 (where it worked with `RUST_LOG`: http/both defaulted to `warn`, stdio forced silent to protect JSON-RPC), but was **removed in the v1.8.0 refactor**.
-- **Why it was removed**: stdio mode must keep stderr/stdout clean, otherwise it pollutes the JSON-RPC protocol and causes client parse failures. v1.7.0 used a complex "toggle logging per transport mode" logic to balance both; v1.8.0 simplified it to "server mode is always silent" — which both fully avoids pollution risk and removes the cost of maintaining the toggle. The trade-off: **the current version cannot raise http/both log verbosity via command line or `RUST_LOG`** (http users debugging a problem can only judge from the client side or process liveness — see "How to tell it's running" below).
-- How to tell it's actually running? When you connect from a browser / web LLM and get **`HTTP 404`** (rather than "connection refused"), it means the server is already listening — you just used the wrong **path** (see the 404 note under "Parameters → --http-endpoint" above).
+#### Without `--log` (default — identical to v1.8.1)
 
-> ⚠️ **Don't be fooled by the empty console**: seeing nothing in the terminal doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`. The "listening" log line is just suppressed.
+- **The console is completely silent** — this is not a crash; it is by design.
+- Server mode does not initialize a tracing subscriber, so no logs are printed regardless of `RUST_LOG`.
+- How to tell it's running? When connecting from a browser / web LLM, if you get **`HTTP 404`** (rather than "connection refused"), the server is listening — you just used the wrong **path**.
+
+> ⚠️ **Don't be fooled by the empty console**: seeing nothing in the terminal doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`.
+
+#### With `--log <LEVEL>`
+
+- **All modes write a log file**: `dynamic-<pid>-<YYYYMMDD-HHMMSSmmm>.log` in the executable's directory (read-only fallback: `data_local_dir/dynamic-mcp/`).
+- **http mode also mirrors to stderr**: for real-time terminal viewing.
+- **stdio / both stay stderr-silent**: to protect the JSON-RPC protocol.
+- **Auto-cleanup**: on startup, `dynamic-*.log` files older than 72 hours are removed (the current run is excluded).
+- `LEVEL`: `trace` / `debug` / `info` / `warn` / `error`; invalid values fall back to `warn`.
+
+```bash
+# Debug http mode (logs to both file and stderr):
+dmcp --transport http --log debug /path/to/dynamic-mcp.json
+
+# Debug stdio mode (file only, stderr stays silent):
+dmcp --transport stdio --log debug /path/to/dynamic-mcp.json
+```
+
+> 💡 **Why v1.8.0 removed the old `--log-level` flag**: stdio mode must keep stderr clean to avoid polluting JSON-RPC. v1.8.2's `--log` uses a hybrid approach — file logging for all modes, plus stderr for http only — balancing diagnostics with protocol safety.
 
 ### OAuth authentication issues
 

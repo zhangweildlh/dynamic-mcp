@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-07-15
+
+### Added
+
+- **`--log` parameter (hybrid logging)** — New `--log <LEVEL>` CLI flag (`trace` / `debug` / `info` / `warn` / `error`; invalid values fall back to `warn`).
+  - **Without `--log`**: server mode (stdio / http / both) stays silent as in v1.8.1 — no file, no stderr. The `import` subcommand still initializes tracing as before.
+  - **With `--log`**: all transport modes write a log file `dynamic-<pid>-<YYYYMMDD-HHMMSSmmm>.log` in the executable's directory (read-only fallback: `data_local_dir/dynamic-mcp/`). Additionally, `http` mode mirrors logs to stderr; `stdio` / `both` remain stderr-silent to protect JSON-RPC.
+  - On startup, stale `dynamic-*.log` files older than 72 hours (excluding the current run) are cleaned up automatically.
+  - No new dependencies added; uses `tracing-subscriber` with `env-filter` (already in `Cargo.toml`).
+
+- **`get_dynamic_tools` enhanced parameters** — New optional parameters (defaults preserve byte-identical output with v1.8.1):
+  - `mode` (`full` default / `compact`): `compact` returns tool name + full description, omits `inputSchema`.
+  - `include_schema` (default `true`): set `false` to strip `inputSchema` from results.
+  - `page` / `page_size` (defaults `1` / `0`): when `page_size > 0`, results are wrapped as `{tools, total, page, page_size, has_more}`; when `0`, flat array as before.
+  - `land_to_file` (default `false`): writes results to a JSON file and returns the absolute path; files auto-cleaned after 72 hours.
+  - `capabilities` (default `false`): attaches an `x-capabilities` array (from `GroupInfo.capability_tags`) to each tool entry.
+
+- **`GroupInfo` metadata enrichment** — `list_groups` response now includes `tool_count` (number of tools in the group) and `capability_tags` (derived from transport type: `stdio` / `http` / `sse` / `oauth`). No `example` field (no source for it). `GroupInfo` has no `deny_unknown_fields`, so older clients remain compatible.
+
+### Fixed
+
+- **OAuth callback `localhost` → `127.0.0.1`** — The OAuth redirect URI used `localhost` while the callback listener bound to `127.0.0.1`; on some systems `localhost` resolves to `::1` (IPv6), causing the browser redirect to fail. Both sides now use `127.0.0.1` consistently.
+- **OAuth discovery skipped when static `Authorization` header present** — Servers configured with a static `Authorization` header (i.e., `needs_oauth() == false`) no longer trigger an unnecessary OAuth discovery round-trip; they connect directly with the static header.
+- **OAuth transport creation timeout 120s → 300s** — The timeout for creating the OAuth transport (browser authorization window) increased from 120s to 300s, giving users more time to complete browser-based authorization.
+
+### Changed
+
+- **Structured error envelope for `call_dynamic_tool`** — Tool call errors now return a structured JSON envelope (still via `CallToolResult` with `is_error: true`, not JSON-RPC error):
+  ```json
+  { "ok": false, "code": "<code>", "message": "<original message>", "cause": null }
+  ```
+  `code` mapping: `timed out` → `timeout` / `Tool execution failed` → `upstream_error` / `Missing required` → `bad_request` / other → `tool_error`. Existing tests asserting `is_error == Some(true)` remain unaffected.
+
 ## [1.8.1] - 2026-07-15
 
 ### ⚠️ Breaking Changes
