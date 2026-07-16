@@ -596,29 +596,152 @@ v1.8.0 曾将服务器模式日志简化为「一律静默」，排查问题不�
 
 ### 7. `get_dynamic_tools` 增强参数（v1.8.2 新增）
 
-`get_dynamic_tools` 元工具新增 6 个可选参数，**默认值保持与 v1.8.1 输出逐字节一致**：
+`get_dynamic_tools` 元工具新增 6 个可选参数，**默认值保持与 v1.8.1 输出逐字节一致**——不传任何新参数时，返回结果与旧版完全相同，零兼容性风险。
 
-| 参数 | 默认值 | 说明 |
+#### 参数一览
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `mode` | string | `full` | `compact` 返回 name + 完整描述，省略 `inputSchema`（参数格式） |
+| `include_schema` | bool | `true` | 设为 `false` 去掉 `inputSchema`；在 `compact` 模式下无效果 |
+| `page` | int | `1` | 分页页码（从 1 开始），配合 `page_size` 使用 |
+| `page_size` | int | `0` | `>0` 时返回分页包装 `{tools, total, page, page_size, has_more}`；`0` 返回扁平数组（与旧版一致） |
+| `land_to_file` | bool | `false` | `true` 时将结果写入 JSON 文件并返回绝对路径（72h 自动清理） |
+| `capabilities` | bool | `false` | `true` 时在每个工具上附加 `x-capabilities` 能力标签数组 |
+
+#### 各参数详解
+
+**`mode`（输出模式）**：
+- `full`（默认）：返回完整的 name + description + inputSchema，与 v1.8.1 逐字节一致。
+- `compact`：返回 name + 完整 description，**省略 inputSchema**。当工具数量多、参数格式庞大时，数据量可降至原来的 1/5 ~ 1/10。适合 LLM 先快速浏览有哪些工具，再按需获取具体参数格式。
+
+**`include_schema`（是否包含参数格式）**：
+- 独立于 `mode` 的精细控制。`mode=full` + `include_schema=false` 也能省掉 inputSchema，但不触发 compact 的其他行为。
+- 典型用法：先用 `mode=compact` 看清单，再用 `mode=full` + `include_schema=true`（默认）单独获取感兴趣的工具的完整参数格式。
+
+**`page` + `page_size`（分页）**：
+- `page_size=0`（默认）：一次性返回全部工具，扁平 JSON 数组，与旧版完全一致。
+- `page_size>0`：分页返回，包装为 `{tools: [...], total: 120, page: 1, page_size: 20, has_more: true}`。LLM 可通过 `has_more` 判断是否还有更多工具，逐页获取。
+- 适合工具总数极多（如接了 10+ 个 MCP 服务器、数百个工具）的场景。
+
+**`land_to_file`（落盘模式）**：
+- `false`（默认）：结果内联在 JSON-RPC 响应中返回。
+- `true`：结果写入 JSON 文件（`dynamic-tools-<pid>-<时间戳>.json`，程序同目录，72h 自动清理），仅返回文件绝对路径。
+- 适合工具数量极大、内联返回可能超出 JSON-RPC 消息大小限制的场景。LLM 拿到路径后可按需读取文件内容。
+
+**`capabilities`（能力标签）**：
+- `false`（默认）：不附加能力标签。
+- `true`：在每个工具条目上附加 `x-capabilities` 数组，内容来自该分组的 `capability_tags`（如 `["http", "oauth"]` 或 `["stdio"]`）。
+- 帮助 LLM 了解每个工具的传输方式和认证需求，从而调整调用策略（如 OAuth 工具可能更慢、stdio 工具响应更快）。
+
+#### 调用示例
+
+```jsonc
+// 1. 快速浏览（compact，省 80% 数据量）：
+get_dynamic_tools({ "group": "firecrawl-mcp", "mode": "compact" })
+
+// 2. 分页获取（每页 20 个）：
+get_dynamic_tools({ "group": "big-server", "page": 1, "page_size": 20 })
+// → { "tools": [...20个...], "total": 95, "page": 1, "page_size": 20, "has_more": true }
+
+// 3. 落盘模式（工具极多时）：
+get_dynamic_tools({ "group": "mega-server", "land_to_file": true })
+// → "/path/to/dynamic-tools-12345-20260716-120000.json"
+
+// 4. 带能力标签：
+get_dynamic_tools({ "group": "github-server", "capabilities": true })
+// → 每个工具附带 "x-capabilities": ["http", "oauth"]
+```
+
+#### 对 LLM 的影响（核心价值）
+
+- **节省上下文(context)窗口**：这是最大的提升。LLM 的记忆容量有限，如果一次返回几百个工具的完整参数格式，可能吃掉几万 token。`compact` 模式可降至 1/5~1/10，分页模式可逐批获取。
+- **两步式工具发现**：LLM 可先用 `compact` 快速扫描全部工具名+描述，锁定目标后再用 `full` 获取那个工具的参数格式——既省 token 又不丢精度。
+- **超大规模兜底**：工具上千时，`land_to_file` 把结果写文件、只返回路径，避免撑爆 JSON-RPC 响应限制。
+- **传输方式感知**：`capabilities` 让 LLM 知道工具是本地 stdio（快、无认证）还是远程 http+oauth（可能超时、需认证），据此调整超时预期和重试策略。
+
+### 8. `list_groups` 元数据增强（v1.8.2 新增）
+
+`list_groups` 返回的每个分组（对应一个上游 MCP 服务器）新增两个字段：
+
+| 新增字段 | 类型 | 说明 |
 |---|---|---|
-| `mode` | `full` | `compact` 返回 name + 完整描述，省略 `inputSchema` |
-| `include_schema` | `true` | 设为 `false` 去掉 `inputSchema` |
-| `page` | `1` | 分页页码 |
-| `page_size` | `0` | `>0` 时返回分页包装 `{tools, total, page, page_size, has_more}`；`0` 返回扁平数组 |
-| `land_to_file` | `false` | `true` 时写 JSON 文件并返回绝对路径（72h 自动清理） |
-| `capabilities` | `false` | `true` 时附加 `x-capabilities` 能力标签数组 |
+| `tool_count` | int | 该分组暴露的工具数量 |
+| `capability_tags` | string[] | 能力标签，自动从传输方式派生 |
 
-**应用场景**：工具数量多时用 `compact` + `page_size` 分页查看；需要存档时用 `land_to_file` 落盘；需要判断传输类型时用 `capabilities`。
+#### `capability_tags` 自动生成规则
 
-### 8. `list_groups` 元数据增强 + 工具调用错误结构化（v1.8.2 新增）
+| 传输方式 | 标签 |
+|---|---|
+| stdio（本地命令行） | `["stdio"]` |
+| http（远程 HTTP） | `["http"]` |
+| sse（Server-Sent Events） | `["sse"]` |
+| 任意方式 + 需要 OAuth | 在上述基础上追加 `"oauth"` |
 
-- **`list_groups` 增强**：返回的每个分组新增 `tool_count`（工具数量）和 `capability_tags`（能力标签，如 `stdio` / `http` / `sse` / `oauth`）。无 `deny_unknown_fields`，旧客户端兼容。
-- **错误结构化信封**：`call_dynamic_tool` 的错误返回改为结构化 JSON（仍为 `CallToolResult{is_error:true}`，非 JSON-RPC error）：
-  ```json
-  { "ok": false, "code": "timeout", "message": "原始错误信息", "cause": null }
-  ```
-  `code` 映射：超时→`timeout` / 上游失败→`upstream_error` / 参数缺失→`bad_request` / 其他→`tool_error`。
+#### 示例
 
-### 9. OAuth 修复（v1.8.2 新增）
+```json
+[
+  {
+    "name": "github-server",
+    "description": "GitHub MCP server",
+    "tool_count": 45,
+    "capability_tags": ["http", "oauth"]
+  },
+  {
+    "name": "local-fs",
+    "description": "Filesystem tools",
+    "tool_count": 8,
+    "capability_tags": ["stdio"]
+  }
+]
+```
+
+#### 对 LLM 的影响
+
+- **更聪明的分组选择**：LLM 先调 `list_groups` 看到概况，发现 "github-server 有 45 个工具、需要 OAuth" vs "local-fs 有 8 个工具、本地 stdio"，就能优先探索更相关的分组。
+- **减少盲调往返**：以前 LLM 不知道分组有多少工具，可能调 `get_dynamic_tools` 才发现只有 2 个。现在看 `tool_count` 就知道。
+- **传输方式感知**：`capability_tags` 让 LLM 对工具的"性格"有预判——本地 stdio 响应快但能力受限于本地环境；http+oauth 能力丰富但可能超时。
+- **完全向后兼容**：`GroupInfo` 结构体没有 `deny_unknown_fields`，旧客户端看到新字段不会报错。
+
+### 9. 工具调用错误结构化信封（v1.8.2 新增）
+
+`call_dynamic_tool` 出错时，返回的错误信息从纯文本改为结构化 JSON 信封，让错误"可编程"——每个错误都有明确的类型代码(code)。
+
+#### 错误格式
+
+```json
+{
+  "ok": false,
+  "code": "timeout",
+  "message": "Tool execution timed out: github-search",
+  "cause": null
+}
+```
+
+#### 错误代码(code)映射
+
+| 原始错误信息包含 | code 值 | 含义 |
+|---|---|---|
+| `timed out` | `timeout` | 超时——上游服务器未在规定时间内回复 |
+| `Tool execution failed` | `upstream_error` | 上游出错——服务器本身报了错 |
+| `Missing required` | `bad_request` | 参数不对——缺少必填参数 |
+| 其他 | `tool_error` | 其他类型的错误 |
+
+- `cause` 字段目前固定为 `null`，是预留扩展位——后续版本可能加入原始错误链。
+- **重要**：此信封通过 `CallToolResult` 的 `content` 字段返回（`is_error: true`），不是 JSON-RPC 协议层的 `error`。LLM 收到的是"工具执行失败"的结果而非通信故障，可正常处理。
+
+#### 对 LLM 的影响（核心价值）
+
+- **可编程的错误处理**：以前 LLM 要从自然语言文本里"猜"错误类型。现在直接读 `code` 字段即可精确分类。
+- **智能重试策略**：
+  - `timeout` → 可能是网络波动，可以重试一次
+  - `bad_request` → 参数填错了，不应重试，应修正参数后重新调用
+  - `upstream_error` → 上游服务器问题，可尝试换工具或告知用户
+  - `tool_error` → 未知错误，可告知用户或尝试其他方案
+- **减少无效重试**：以前 LLM 可能对所有错误无脑重试 3 次，浪费 token 和时间。有了错误分类，LLM 只在合理场景下重试。
+
+### 10. OAuth 修复（v1.8.2 新增）
 
 - **回调地址 `localhost` → `127.0.0.1`**：OAuth 回调监听绑定 `127.0.0.1`，但重定向 URI 用了 `localhost`；某些系统 `localhost` 解析到 `::1`（IPv6），导致浏览器回调失败。现统一为 `127.0.0.1`。
 - **静态 `Authorization` 头跳过 OAuth discovery**：已配置静态 `Authorization` 头的服务器不再做无谓的 OAuth 发现探测，直接用静态头连接。

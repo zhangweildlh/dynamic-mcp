@@ -596,29 +596,152 @@ v1.8.0 simplified server-mode logging to "always silent", making debugging incon
 
 ### 7. `get_dynamic_tools` enhanced parameters (new in v1.8.2)
 
-The `get_dynamic_tools` meta-tool gains 6 optional parameters. **Defaults preserve byte-identical output with v1.8.1:**
+The `get_dynamic_tools` meta-tool gains 6 optional parameters. **Defaults preserve byte-identical output with v1.8.1** — passing none of the new parameters returns exactly the same result as before, with zero compatibility risk.
 
-| Parameter | Default | Description |
+#### Parameter overview
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `full` | `compact` returns name + full description, omits `inputSchema` |
+| `include_schema` | bool | `true` | Set `false` to strip `inputSchema`; has no effect in `compact` mode |
+| `page` | int | `1` | Page number (1-based), used with `page_size` |
+| `page_size` | int | `0` | `>0` wraps results as `{tools, total, page, page_size, has_more}`; `0` returns flat array (same as before) |
+| `land_to_file` | bool | `false` | `true` writes results to a JSON file and returns the absolute path (72h auto-cleanup) |
+| `capabilities` | bool | `false` | `true` attaches `x-capabilities` array (from `GroupInfo.capability_tags`) to each tool entry |
+
+#### Detailed parameter descriptions
+
+**`mode` (output mode)**:
+- `full` (default): Returns complete name + description + inputSchema, byte-identical to v1.8.1.
+- `compact`: Returns name + full description, **omits inputSchema**. When tools have large parameter schemas, data volume drops to 1/5 ~ 1/10. Ideal for LLMs to quickly scan available tools, then fetch specific schemas on demand.
+
+**`include_schema` (include parameter schema)**:
+- Fine-grained control independent of `mode`. `mode=full` + `include_schema=false` also strips inputSchema without triggering compact behavior.
+- Typical workflow: first use `mode=compact` to browse the tool list, then use `mode=full` (default `include_schema=true`) to get the full parameter schema for the tool of interest.
+
+**`page` + `page_size` (pagination)**:
+- `page_size=0` (default): Returns all tools at once as a flat JSON array, identical to old behavior.
+- `page_size>0`: Paginates, wrapping results as `{tools: [...], total: 120, page: 1, page_size: 20, has_more: true}`. LLMs can use `has_more` to decide whether to fetch the next page.
+- Ideal when the total tool count is very large (e.g., 10+ MCP servers, hundreds of tools).
+
+**`land_to_file` (file landing mode)**:
+- `false` (default): Results returned inline in the JSON-RPC response.
+- `true`: Results written to a JSON file (`dynamic-tools-<pid>-<timestamp>.json`, executable directory, 72h auto-cleanup); only the absolute file path is returned.
+- Ideal when inline results might exceed JSON-RPC message size limits. The LLM receives a path and can read the file contents as needed.
+
+**`capabilities` (capability tags)**:
+- `false` (default): No capability tags attached.
+- `true`: Attaches an `x-capabilities` array to each tool entry, sourced from the group's `capability_tags` (e.g., `["http", "oauth"]` or `["stdio"]`).
+- Helps LLMs understand each tool's transport type and authentication requirements, adjusting call strategy accordingly (OAuth tools may be slower; stdio tools respond faster).
+
+#### Usage examples
+
+```jsonc
+// 1. Quick browse (compact, saves ~80% data):
+get_dynamic_tools({ "group": "firecrawl-mcp", "mode": "compact" })
+
+// 2. Paginated retrieval (20 per page):
+get_dynamic_tools({ "group": "big-server", "page": 1, "page_size": 20 })
+// → { "tools": [...20 items...], "total": 95, "page": 1, "page_size": 20, "has_more": true }
+
+// 3. File landing (when tools are extremely numerous):
+get_dynamic_tools({ "group": "mega-server", "land_to_file": true })
+// → "/path/to/dynamic-tools-12345-20260716-120000.json"
+
+// 4. With capability tags:
+get_dynamic_tools({ "group": "github-server", "capabilities": true })
+// → Each tool gets "x-capabilities": ["http", "oauth"]
+```
+
+#### Impact on LLMs (core value)
+
+- **Context window savings**: The biggest improvement. An LLM's memory is limited; returning hundreds of tools with full parameter schemas can consume tens of thousands of tokens. `compact` mode reduces this to 1/5~1/10; pagination allows batch retrieval.
+- **Two-step tool discovery**: LLMs can first use `compact` to quickly scan all tool names + descriptions, then use `full` to fetch the parameter schema for the target tool — saving tokens without losing precision.
+- **Ultra-large-scale fallback**: When tools number in the thousands, `land_to_file` writes results to a file and returns only the path, avoiding JSON-RPC response size limits.
+- **Transport awareness**: `capabilities` lets LLMs know whether a tool is local stdio (fast, no auth) or remote http+oauth (may timeout, requires auth), adjusting timeout expectations and retry strategies.
+
+### 8. `list_groups` metadata enrichment (new in v1.8.2)
+
+Each group returned by `list_groups` (corresponding to one upstream MCP server) now includes two new fields:
+
+| New field | Type | Description |
 |---|---|---|
-| `mode` | `full` | `compact` returns name + full description, omits `inputSchema` |
-| `include_schema` | `true` | Set `false` to strip `inputSchema` |
-| `page` | `1` | Page number for pagination |
-| `page_size` | `0` | `>0` wraps results as `{tools, total, page, page_size, has_more}`; `0` returns flat array |
-| `land_to_file` | `false` | `true` writes results to a JSON file and returns the absolute path (72h auto-cleanup) |
-| `capabilities` | `false` | `true` attaches `x-capabilities` array (from `GroupInfo.capability_tags`) |
+| `tool_count` | int | Number of tools exposed by this group |
+| `capability_tags` | string[] | Capability tags, auto-derived from transport type |
 
-**Application scenario**: Use `compact` + `page_size` to browse many tools in pages; use `land_to_file` to archive; use `capabilities` to inspect transport types.
+#### `capability_tags` auto-generation rules
 
-### 8. `list_groups` metadata enrichment + structured tool-call errors (new in v1.8.2)
+| Transport type | Tags |
+|---|---|
+| stdio (local command-line) | `["stdio"]` |
+| http (remote HTTP) | `["http"]` |
+| sse (Server-Sent Events) | `["sse"]` |
+| Any + requires OAuth | Appends `"oauth"` to the above |
 
-- **`list_groups` enhanced**: each group now includes `tool_count` (number of tools) and `capability_tags` (e.g., `stdio` / `http` / `sse` / `oauth`). No `deny_unknown_fields`, so older clients remain compatible.
-- **Structured error envelope**: `call_dynamic_tool` errors now return structured JSON (still via `CallToolResult{is_error:true}`, not JSON-RPC error):
-  ```json
-  { "ok": false, "code": "timeout", "message": "original error message", "cause": null }
-  ```
-  `code` mapping: timed out → `timeout` / upstream failure → `upstream_error` / missing parameter → `bad_request` / other → `tool_error`.
+#### Example
 
-### 9. OAuth fixes (new in v1.8.2)
+```json
+[
+  {
+    "name": "github-server",
+    "description": "GitHub MCP server",
+    "tool_count": 45,
+    "capability_tags": ["http", "oauth"]
+  },
+  {
+    "name": "local-fs",
+    "description": "Filesystem tools",
+    "tool_count": 8,
+    "capability_tags": ["stdio"]
+  }
+]
+```
+
+#### Impact on LLMs
+
+- **Smarter group selection**: LLMs call `list_groups` first to see the overview — "github-server has 45 tools, needs OAuth" vs "local-fs has 8 tools, local stdio" — and can prioritize exploring the more relevant group.
+- **Fewer wasted round-trips**: Previously, LLMs didn't know how many tools a group had until they called `get_dynamic_tools`. Now `tool_count` gives this instantly.
+- **Transport awareness**: `capability_tags` give LLMs a preview of tool "personality" — local stdio is fast but limited to the local environment; http+oauth is powerful but may timeout.
+- **Fully backward compatible**: `GroupInfo` struct has no `deny_unknown_fields`, so older clients seeing new fields won't error.
+
+### 9. Structured error envelope for tool calls (new in v1.8.2)
+
+When `call_dynamic_tool` fails, the error response changes from plain text to a structured JSON envelope, making errors "programmable" — each error has a clear type code.
+
+#### Error format
+
+```json
+{
+  "ok": false,
+  "code": "timeout",
+  "message": "Tool execution timed out: github-search",
+  "cause": null
+}
+```
+
+#### Error code mapping
+
+| Original error contains | code value | Meaning |
+|---|---|---|
+| `timed out` | `timeout` | Timeout — upstream server did not respond in time |
+| `Tool execution failed` | `upstream_error` | Upstream error — the server itself reported an error |
+| `Missing required` | `bad_request` | Bad request — missing a required parameter |
+| Other | `tool_error` | Other type of error |
+
+- `cause` is currently fixed at `null`, reserved for future expansion (e.g., original error chains).
+- **Important**: This envelope is returned via `CallToolResult`'s `content` field (`is_error: true`), not as a JSON-RPC protocol-level `error`. The LLM receives a "tool execution failed" result, not a communication failure, and can process it normally.
+
+#### Impact on LLMs (core value)
+
+- **Programmable error handling**: Previously, LLMs had to "guess" the error type from natural language text. Now they read the `code` field for precise classification.
+- **Smart retry strategies**:
+  - `timeout` → Possibly a network hiccup; reasonable to retry once
+  - `bad_request` → Wrong parameters; should not retry — fix parameters and call again
+  - `upstream_error` → Upstream server problem; try a different tool or inform the user
+  - `tool_error` → Unknown error; inform the user or try an alternative approach
+- **Reduced wasteful retries**: Previously, LLMs might blindly retry all errors 3 times, wasting tokens and time. With error classification, LLMs retry only when it makes sense.
+
+### 10. OAuth fixes (new in v1.8.2)
 
 - **Callback `localhost` → `127.0.0.1`**: the OAuth callback listener binds `127.0.0.1`, but the redirect URI used `localhost`; on some systems `localhost` resolves to `::1` (IPv6), causing the browser redirect to fail. Both sides now use `127.0.0.1`.
 - **Static `Authorization` header skips OAuth discovery**: servers with a static `Authorization` header no longer trigger an unnecessary OAuth discovery round-trip; they connect directly.
