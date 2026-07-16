@@ -492,7 +492,7 @@ Config details:
 | `--transport`   | `stdio`         | 决定开几扇门：`stdio` 只给桌面 AI 软件用；`http` 只给浏览器/手机/云端用；`both` 两者都要（推荐让桌面 AI 软件帮你打开）。 |
 | `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | 对外窗口的「完整地址」：`host:port/path`（IPv6 用 `[host]:port/path`）。客户端连接地址要和这里完全一致，例如 `http://127.0.0.1:8082/dynamic-mcp`。默认即可，端口被占用就改（如 `127.0.0.1:9000/dynamic-mcp`）。 |
 | `--no-evict`    | `false`         | 仅对 `--transport http` 有效。给当前的纯 http 实例"上锁"：告诉将来同端口启动的 `both` 实例"别强杀我"，让 `both` 只开 stdio、HTTP 关掉，二者和平共存。配 `--transport both` 或 `stdio` 时会直接报错退出。 |
-| `--log`         | （无）          | 日志级别：`trace` / `debug` / `info` / `warn` / `error`（非法值回退 `warn`）。**不传则与 v1.8.1 一致**——服务器模式完全静默。**传了则全模式写日志文件**（`dynamic-<pid>-<时间>.log`，程序同目录，72h 自动清理），http 模式额外输出到 stderr，stdio/both 仍保持 stderr 静默以保护 JSON-RPC。 |
+| `--log`         | （无）          | 日志级别：`trace` / `debug` / `info` / `warn` / `error`（非法值回退 `warn`）。**不传时**：http 模式默认输出 `warn` 级日志到 stderr，stdio/both 完全静默，均不写文件。**传了则全模式写日志文件**（`dynamic-<pid>-<时间>.log`，程序同目录，72h 自动清理），http 模式额外输出到 stderr，stdio/both 仍保持 stderr 静默以保护 JSON-RPC。 |
 
 ### 使用方法
 
@@ -517,7 +517,7 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 > - 完整端点 = `http://<host>:<port><path>`，其中 `<path>` 就是你 `--http-endpoint` 里 `host:port` 之后的那段 path（如 `/dynamic-mcp`），**前后都不要再加减 `/mcp`**。
 > - 例如你用 `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`，客户端就填 `http://127.0.0.1:8082/dynamic-mcp-server`（已实测可连）。
 > - ⚠️ 若填成 `http://127.0.0.1:8082/mcp/dynamic-mcp-server` 或 `.../dynamic-mcp-server/mcp` 都会报 **HTTP 404**——本服务不自带 `/mcp` 前缀，多加一段就是路径错。
-> - 启动后控制台若毫无输出也别慌：v1.8.2 服务器模式在不传 `--log` 时默认静默（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。传 `--log debug` 可同时写日志文件和（http 模式下）stderr 输出。
+> - 启动后控制台若毫无输出也别慌：v1.8.2 在不传 `--log` 时，stdio/both 模式完全静默，http 模式仅在 stderr 输出 `warn` 及以上级别日志（见下方「故障排查 → 日志」），只要浏览器不是报「无法连接」，就说明它正在监听。传 `--log debug` 可同时写日志文件和（http 模式下）stderr 输出。
 
 > 💡 **WorkBuddy / OpenCode / Claude Desktop 里地址怎么填**：
 > 这些桌面客户端通常会以两种方式和 dmcp 协作：
@@ -588,7 +588,7 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 
 v1.8.0 曾将服务器模式日志简化为「一律静默」，排查问题不便。v1.8.2 引入 `--log <LEVEL>` 参数，用「文件落盘 + http 额外 stderr」的混合方案兼顾排查需求与 JSON-RPC 协议安全：
 
-- **不传 `--log`**：与 v1.8.1 完全一致——服务器模式静默，不写文件、不输出 stderr。
+- **不传 `--log`**：http 模式默认输出 `warn` 级日志到 stderr（方便排查连接问题）；stdio / both 完全静默；均不写日志文件。
 - **传 `--log <LEVEL>`**：全模式写日志文件 `dynamic-<pid>-<时间戳>.log`（程序同目录，72h 自动清理）；http 模式额外输出到 stderr；stdio / both 保持 stderr 静默。
 - `LEVEL`：`trace` / `debug` / `info` / `warn` / `error`（非法值回退 `warn`）。
 
@@ -645,13 +645,14 @@ v1.8.0 曾将服务器模式日志简化为「一律静默」，排查问题不�
 
 在 **v1.8.2** 中，运行服务器（`--transport stdio` / `http` / `both`）时，日志行为取决于是否传了 `--log` 参数：
 
-#### 不传 `--log`（默认，与 v1.8.1 一致）
+#### 不传 `--log`（默认）
 
-- **控制台完全静默**——这不是程序崩溃，而是设计行为。
-- 服务器模式不初始化 tracing subscriber，因此无论是否设置 `RUST_LOG`，都不会打印任何日志。
+- **http 模式**：stderr 输出 `warn` 及以上级别日志——这不是程序崩溃，而是设计行为，方便你快速发现连接问题。
+- **stdio / both 模式**：完全静默，不写文件、不输出 stderr，保护 JSON-RPC 协议干净。
+- 不写日志文件。无论是否设置 `RUST_LOG`，日志级别均由 `--log` 参数控制（不传时默认 `warn`）。
 - 怎样判断它在运行？用浏览器 / 网页 LLM 连接时，如果返回的是 **`HTTP 404`**（而不是「无法连接 / connection refused」），就说明服务器已在监听，只是路径不对。
 
-> ⚠️ **别被空控制台骗了**：看到终端一行都没有，以为没启动成功——其实它正安静监听在 `127.0.0.1:8082`。
+> ⚠️ **别被空控制台骗了**：stdio/both 模式下看到终端一行都没有，以为没启动成功——其实它正安静监听在 `127.0.0.1:8082`。http 模式下 stderr 有少量 `warn` 日志属正常现象。
 
 #### 传了 `--log <LEVEL>`
 

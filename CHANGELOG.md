@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`--log` parameter (hybrid logging)** — New `--log <LEVEL>` CLI flag (`trace` / `debug` / `info` / `warn` / `error`; invalid values fall back to `warn`).
-  - **Without `--log`**: server mode (stdio / http / both) stays silent as in v1.8.1 — no file, no stderr. The `import` subcommand still initializes tracing as before.
+  - **Without `--log`**: `http` mode outputs WARN-level logs to stderr; `stdio` / `both` are silent; no log file. The `import` subcommand still initializes tracing as before.
   - **With `--log`**: all transport modes write a log file `dynamic-<pid>-<YYYYMMDD-HHMMSSmmm>.log` in the executable's directory (read-only fallback: `data_local_dir/dynamic-mcp/`). Additionally, `http` mode mirrors logs to stderr; `stdio` / `both` remain stderr-silent to protect JSON-RPC.
   - On startup, stale `dynamic-*.log` files older than 72 hours (excluding the current run) are cleaned up automatically.
   - No new dependencies added; uses `tracing-subscriber` with `env-filter` (already in `Cargo.toml`).

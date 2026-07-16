@@ -492,7 +492,7 @@ New command-line flags control HTTP exposure (the config file is **unchanged** �
 | `--transport`   | `stdio`                   | Which doors to open: `stdio` for the desktop AI app only; `http` for browser/phone/cloud only; `both` for both (recommended: let the desktop AI app open it for you). |
 | `--http-endpoint` | `127.0.0.1:8082/dynamic-mcp` | The full HTTP "address" in `host:port/path` form (IPv6 uses `[host]:port/path`). The client's connection address must match this exactly, e.g. `http://127.0.0.1:8082/dynamic-mcp`. Keep the default; change it only if the port is taken (e.g. `127.0.0.1:9000/dynamic-mcp`). |
 | `--no-evict`    | `false`                   | Only valid with `--transport http`. "Locks" the current plain http instance: it tells a future `both` started on the same port "don't kill me", so that `both` runs stdio only and leaves HTTP off — the two coexist peacefully. Passing it with `--transport both` or `stdio` errors out immediately. |
-| `--log`         | (none)                    | Log level: `trace` / `debug` / `info` / `warn` / `error` (invalid falls back to `warn`). **Omitting it is identical to v1.8.1** — server mode is fully silent. **Passing it writes a log file** (`dynamic-<pid>-<timestamp>.log`, in the executable's directory, auto-cleaned after 72h) in all modes; http mode also mirrors to stderr; stdio/both stay stderr-silent to protect JSON-RPC. |
+| `--log`         | (none)                    | Log level: `trace` / `debug` / `info` / `warn` / `error` (invalid falls back to `warn`). **When omitted**: http mode outputs `warn`-level logs to stderr; stdio/both are fully silent; no log file. **When passed**: all modes write a log file (`dynamic-<pid>-<timestamp>.log`, in the executable's directory, auto-cleaned after 72h); http mode also mirrors to stderr; stdio/both stay stderr-silent to protect JSON-RPC. |
 
 ### Usage
 
@@ -517,7 +517,7 @@ When `--transport http` or `both` is used, the facade is served at `http://<host
 > - The full endpoint = `http://<host>:<port><path>`, where `<path>` is exactly the `path` part after `host:port` in your `--http-endpoint` (e.g. `/dynamic-mcp`) — **do not add or remove a `/mcp` prefix or suffix**.
 > - Example: with `--http-endpoint 127.0.0.1:8082/dynamic-mcp-server`, the client uses `http://127.0.0.1:8082/dynamic-mcp-server` (verified working).
 > - ⚠️ Typing `http://127.0.0.1:8082/mcp/dynamic-mcp-server` or `.../dynamic-mcp-server/mcp` both return **HTTP 404** — this service has no built-in `/mcp` prefix; any extra segment is a wrong path.
-> - If the console is completely empty after starting, don't panic: v1.8.2 server mode is silent by default when `--log` is not passed (see "Troubleshooting → Logging" below); as long as the browser doesn't say "connection refused", it is listening. Pass `--log debug` to write logs to a file and (in http mode) stderr.
+> - If the console is completely empty after starting, don't panic: in v1.8.2 without `--log`, stdio/both modes are fully silent, while http mode outputs `warn`-and-above logs to stderr (see "Troubleshooting → Logging" below); as long as the browser doesn't say "connection refused", it is listening. Pass `--log debug` to write logs to a file and (in http mode) stderr.
 
 > 💡 **What address to fill in WorkBuddy / OpenCode / Claude Desktop**:
 > These desktop clients typically cooperate with dmcp in two ways:
@@ -588,7 +588,7 @@ Because upstream hasn't released for a long time, this fork builds on its own: w
 
 v1.8.0 simplified server-mode logging to "always silent", making debugging inconvenient. v1.8.2 introduces `--log <LEVEL>`, using a hybrid approach — file logging for all modes, plus stderr for http only — balancing diagnostics with JSON-RPC protocol safety:
 
-- **Without `--log`**: identical to v1.8.1 — server mode is silent, no file, no stderr.
+- **Without `--log`**: http mode outputs `warn`-level logs to stderr (for quick connection debugging); stdio / both are fully silent; no log file.
 - **With `--log <LEVEL>`**: all modes write `dynamic-<pid>-<timestamp>.log` (executable directory, auto-cleaned after 72h); http also mirrors to stderr; stdio/both stay stderr-silent.
 - `LEVEL`: `trace` / `debug` / `info` / `warn` / `error` (invalid falls back to `warn`).
 
@@ -645,13 +645,14 @@ The `get_dynamic_tools` meta-tool gains 6 optional parameters. **Defaults preser
 
 In **v1.8.2**, when running the server (`--transport stdio` / `http` / `both`), logging behavior depends on whether `--log` is passed:
 
-#### Without `--log` (default — identical to v1.8.1)
+#### Without `--log` (default)
 
-- **The console is completely silent** — this is not a crash; it is by design.
-- Server mode does not initialize a tracing subscriber, so no logs are printed regardless of `RUST_LOG`.
+- **http mode**: outputs `warn`-and-above logs to stderr — this is not a crash; it is by design, helping you spot connection issues quickly.
+- **stdio / both modes**: fully silent — no file, no stderr, keeping JSON-RPC clean.
+- No log file is written. Regardless of `RUST_LOG`, the log level is controlled by `--log` (defaults to `warn` when omitted).
 - How to tell it's running? When connecting from a browser / web LLM, if you get **`HTTP 404`** (rather than "connection refused"), the server is listening — you just used the wrong **path**.
 
-> ⚠️ **Don't be fooled by the empty console**: seeing nothing in the terminal doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`.
+> ⚠️ **Don't be fooled by the empty console**: in stdio/both modes, seeing nothing in the terminal doesn't mean it failed to start — it is quietly listening on `127.0.0.1:8082`. In http mode, a few `warn` lines on stderr are normal.
 
 #### With `--log <LEVEL>`
 
