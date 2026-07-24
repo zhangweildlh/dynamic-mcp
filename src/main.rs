@@ -249,18 +249,30 @@ async fn run_server(
     no_evict: bool,
     log: Option<String>,
 ) -> Result<()> {
-    // ---- Logging (v1.8.2 hybrid scheme) ----
+    // ---- Logging (v1.8.2 hybrid scheme, + DEBUG-INSTRUMENTATION override) ----
     // No `--log`: http mode defaults to WARN on stderr; stdio/both silent; no file.
     // With `--log <LEVEL>`: every mode writes a log file; http also prints to
     // stderr. stdio/both never print to stderr (protect JSON-RPC). File path =
     // next to the executable, or data_local_dir/dynamic-mcp if not writable.
-    let log_filter = log.as_deref().map(parse_level).unwrap_or(LevelFilter::WARN);
+    // [DEBUG-INSTRUMENTATION] While this override is present, a file logger is
+    // ALWAYS created at DEBUG level even without `--log` (see block below).
+    // [DEBUG-INSTRUMENTATION] Force a file logger on EVERY run (DEBUG level when
+    // `--log` is absent) so we can capture the connector's kill/restart behaviour
+    // in production. The connector spawns dmcp with cached args that omit `--log`,
+    // so the normal `if log.is_some()` branch would never fire. This block is
+    // temporary debugging instrumentation and MUST be removed before final merge.
+    let forced = log.is_none();
+    let log_filter = if forced {
+        LevelFilter::DEBUG
+    } else {
+        log.as_deref().map(parse_level).unwrap_or(LevelFilter::WARN)
+    };
     let mut layers: Vec<
         Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
     > = Vec::new();
     let mut log_path: Option<PathBuf> = None;
 
-    if log.is_some() {
+    {
         let dir = log_dir();
         let _ = std::fs::create_dir_all(&dir);
         let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%3f").to_string();
@@ -286,6 +298,20 @@ async fn run_server(
                     std::time::Duration::from_secs(72 * 3600),
                 );
             });
+        }
+        // [DEBUG] Capture panics to the same log file: the connector kills dmcp via
+        // TerminateProcess, which would otherwise discard the panic message on stderr.
+        if let Some(ref p) = log_path {
+            let panic_path = p.clone();
+            std::panic::set_hook(Box::new(move |info| {
+                use std::io::Write as _;
+                if let Ok(mut f) =
+                    std::fs::OpenOptions::new().create(true).append(true).open(&panic_path)
+                {
+                    let _ = writeln!(f, "[PANIC] {}", info);
+                    let _ = f.flush();
+                }
+            }));
         }
     }
 
