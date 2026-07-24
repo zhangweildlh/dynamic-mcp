@@ -342,11 +342,20 @@ async fn run_server(
     // Validate initial config
     config::load_config(&config_path).await?;
 
-    // Initial load - AWAIT completion to eliminate the cold-start window.
-    // We deliberately block run_stdio until every group has finished connecting
-    // (or failed), so the first incoming request never hits "Group not found".
-    // Per-group connects still run in parallel via tokio::spawn; we only await
-    // the join handles here. (B1: root-cause fix for startup instability.)
+    // Initial load - BACKGROUND connect with a short grace window.
+    // Per-group connects run in parallel via tokio::spawn (non-blocking, exactly
+    // as upstream does). We deliberately do NOT await all handles to completion,
+    // because that could take ~10s and would exceed the MCP connector's
+    // process-launch timeout, causing the connector to kill & restart dmcp in a
+    // loop (observed crash-restart loop with old B1). Instead we only wait up to
+    // a short grace period (3s) before entering run_stdio; any group whose
+    // connect is still in flight keeps running in the background (tokio::spawn
+    // tasks are NOT cancelled when their JoinHandle is dropped) and becomes
+    // ready shortly after. The rare first request that arrives before a slow
+    // group is connected is handled by the normal "Group not found" path, which
+    // is mitigated at the config layer (A2) and by the mimo_mcp.py process-tree
+    // cleanup. (B1: avoid startup blocking that triggered the launch-timeout
+    // restart loop.)
     let client_init = client.clone();
     let config_path_init = config_path.clone();
     if let Ok(config) = config::load_config(&config_path_init).await {
@@ -388,9 +397,15 @@ async fn run_server(
             })
             .collect();
 
-        for handle in handles {
-            let _ = handle.await;
-        }
+        // 短宽限：最多等待 3 秒让 group 连接，超时即放行进 run_stdio。
+        // 未完成的连接任务仍在后台继续运行（tokio::spawn 的任务不会因
+        // JoinHandle 被 drop 而取消），待其完成后即可正常服务。
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            for handle in handles {
+                let _ = handle.await;
+            }
+        })
+        .await;
     }
 
     // Spawn periodic retry handler for failed connections
