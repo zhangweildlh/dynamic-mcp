@@ -342,54 +342,56 @@ async fn run_server(
     // Validate initial config
     config::load_config(&config_path).await?;
 
-    // Initial load - spawn in background to avoid blocking stdio
+    // Initial load - AWAIT completion to eliminate the cold-start window.
+    // We deliberately block run_stdio until every group has finished connecting
+    // (or failed), so the first incoming request never hits "Group not found".
+    // Per-group connects still run in parallel via tokio::spawn; we only await
+    // the join handles here. (B1: root-cause fix for startup instability.)
     let client_init = client.clone();
     let config_path_init = config_path.clone();
-    tokio::spawn(async move {
-        if let Ok(config) = config::load_config(&config_path_init).await {
-            let servers: Vec<_> = config
-                .mcp_servers
-                .into_iter()
-                .filter(|(_, server_config)| {
-                    if !server_config.is_enabled() {
-                        tracing::info!("⊘ Server is disabled, skipping connection");
-                    }
-                    server_config.is_enabled()
-                })
-                .collect();
+    if let Ok(config) = config::load_config(&config_path_init).await {
+        let servers: Vec<_> = config
+            .mcp_servers
+            .into_iter()
+            .filter(|(_, server_config)| {
+                if !server_config.is_enabled() {
+                    tracing::info!("⊘ Server is disabled, skipping connection");
+                }
+                server_config.is_enabled()
+            })
+            .collect();
 
-            let handles: Vec<_> = servers
-                .into_iter()
-                .map(|(group_name, server_config)| {
-                    let client = client_init.clone();
-                    tokio::spawn(async move {
-                        let res = {
+        let handles: Vec<_> = servers
+            .into_iter()
+            .map(|(group_name, server_config)| {
+                let client = client_init.clone();
+                tokio::spawn(async move {
+                    let res = {
+                        let mut client_lock = client.write().await;
+                        client_lock
+                            .connect(group_name.clone(), server_config.clone())
+                            .await
+                    };
+                    match res {
+                        Ok(_) => Ok(group_name),
+                        Err(e) => {
                             let mut client_lock = client.write().await;
-                            client_lock
-                                .connect(group_name.clone(), server_config.clone())
-                                .await
-                        };
-                        match res {
-                            Ok(_) => Ok(group_name),
-                            Err(e) => {
-                                let mut client_lock = client.write().await;
-                                client_lock.record_failed_connection(
-                                    group_name.clone(),
-                                    server_config,
-                                    e,
-                                );
-                                Err(group_name)
-                            }
+                            client_lock.record_failed_connection(
+                                group_name.clone(),
+                                server_config,
+                                e,
+                            );
+                            Err(group_name)
                         }
-                    })
+                    }
                 })
-                .collect();
+            })
+            .collect();
 
-            for handle in handles {
-                let _ = handle.await;
-            }
+        for handle in handles {
+            let _ = handle.await;
         }
-    });
+    }
 
     // Spawn periodic retry handler for failed connections
     let client_retry = client.clone();
