@@ -106,7 +106,8 @@ impl StdioTransport {
                     if response.id != serde_json::Value::Null && response.id != request.id {
                         tracing::warn!(
                             "Discarding stale response id={:?} (expected {:?})",
-                            response.id, request.id
+                            response.id,
+                            request.id
                         );
                         continue;
                     }
