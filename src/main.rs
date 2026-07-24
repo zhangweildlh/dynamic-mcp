@@ -397,15 +397,14 @@ async fn run_server(
             })
             .collect();
 
-        // 短宽限：最多等待 3 秒让 group 连接，超时即放行进 run_stdio。
-        // 未完成的连接任务仍在后台继续运行（tokio::spawn 的任务不会因
-        // JoinHandle 被 drop 而取消），待其完成后即可正常服务。
-        let _ = tokio::time::timeout(Duration::from_secs(3), async {
-            for handle in handles {
-                let _ = handle.await;
-            }
-        })
-        .await;
+        // 不阻塞启动（回退到原版 1.8.2 行为）：group 连接在后台 tokio::spawn
+        // 任务中继续，run_stdio 立即开始。B1 曾尝试用 3 秒宽限消除冷启动 GNF，
+        // 但该宽限推迟了 run_stdio 就绪，导致连接器在 dmcp 尚未进入 MCP 握手前
+        // 就因握手/健康检查超时而将其杀掉重启，形成每 ~20-30 秒一次的慢速重启
+        // 循环（调用在重启瞬间间歇失败）。原版"立即 run_stdio"握手即时成功，无
+        // 此问题（曾稳定于 PID 4312）。冷启动 GNF 已在配置层 A2 + mimo_mcp.py
+        // 进程树清理处缓解，不值得为消除它而阻塞启动触发重启循环。
+        let _ = handles; // 显式 drop JoinHandle；后台连接任务不被取消
     }
 
     // Spawn periodic retry handler for failed connections
