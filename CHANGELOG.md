@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-07-25
+
+### Fixed
+
+- **B1（启动稳定性）** — 取消启动时对全部 group 连接的阻塞等待：各 group 连接改为在后台 `tokio::spawn` 任务中继续，`run_stdio` 立即进入 MCP 握手，不再 `await` 连接完成。避免 MCP 连接器在 dmcp 尚未就绪时因启动阶段握手/健康检查超时而将其杀掉重启，形成每 ~20–30 秒一次的慢速重启循环（冷启动 GNF 已在配置层 A2 + `mimo_mcp.py` 进程树清理处缓解）。
+- **B3（响应正确性）** — `StdioTransport` 读取 `JsonRpcResponse` 时丢弃 `id` 与当前请求不匹配的陈旧响应，消除「请求 future 因超时丢弃、但上游随后回写其响应」导致的响应串扰（cross-talk）。`id` 为 null/缺失的通知与错误仍照常透传，保持原有行为。
+
+> 本版本为连接器稳定性补丁，合并自 PR #8（`fix/mimo-stability-merge`），已剔除调试仪器化，对应版本号 bump 至 1.8.3。
+
 ## [1.8.2] - 2026-07-15
 
 ### Added

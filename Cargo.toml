@@ -1,6 +1,6 @@
 [package]
 name = "dynamic-mcp"
-version = "1.8.2"
+version = "1.8.3"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Anssi Syrjäsalo"]
