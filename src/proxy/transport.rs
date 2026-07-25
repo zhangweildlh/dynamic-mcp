@@ -96,7 +96,23 @@ impl StdioTransport {
             }
 
             match serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    // B3: discard stale responses whose id does not match this
+                    // request. This prevents cross-talk when a previous call's
+                    // future was dropped on timeout while the upstream kept
+                    // running and later wrote its (now-stale) response.
+                    // Null/missing id (unsolicited notifications or errors) are
+                    // passed through unchanged to preserve existing behavior.
+                    if response.id != serde_json::Value::Null && response.id != request.id {
+                        tracing::warn!(
+                            "Discarding stale response id={:?} (expected {:?})",
+                            response.id,
+                            request.id
+                        );
+                        continue;
+                    }
+                    return Ok(response);
+                }
                 Err(e) => {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
                         if value.get("error").is_some() {

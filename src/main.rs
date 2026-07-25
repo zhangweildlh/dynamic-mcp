@@ -342,54 +342,70 @@ async fn run_server(
     // Validate initial config
     config::load_config(&config_path).await?;
 
-    // Initial load - spawn in background to avoid blocking stdio
+    // Initial load - BACKGROUND connect with a short grace window.
+    // Per-group connects run in parallel via tokio::spawn (non-blocking, exactly
+    // as upstream does). We deliberately do NOT await all handles to completion,
+    // because that could take ~10s and would exceed the MCP connector's
+    // process-launch timeout, causing the connector to kill & restart dmcp in a
+    // loop (observed crash-restart loop with old B1). Instead we only wait up to
+    // a short grace period (3s) before entering run_stdio; any group whose
+    // connect is still in flight keeps running in the background (tokio::spawn
+    // tasks are NOT cancelled when their JoinHandle is dropped) and becomes
+    // ready shortly after. The rare first request that arrives before a slow
+    // group is connected is handled by the normal "Group not found" path, which
+    // is mitigated at the config layer (A2) and by the mimo_mcp.py process-tree
+    // cleanup. (B1: avoid startup blocking that triggered the launch-timeout
+    // restart loop.)
     let client_init = client.clone();
     let config_path_init = config_path.clone();
-    tokio::spawn(async move {
-        if let Ok(config) = config::load_config(&config_path_init).await {
-            let servers: Vec<_> = config
-                .mcp_servers
-                .into_iter()
-                .filter(|(_, server_config)| {
-                    if !server_config.is_enabled() {
-                        tracing::info!("⊘ Server is disabled, skipping connection");
-                    }
-                    server_config.is_enabled()
-                })
-                .collect();
+    if let Ok(config) = config::load_config(&config_path_init).await {
+        let servers: Vec<_> = config
+            .mcp_servers
+            .into_iter()
+            .filter(|(_, server_config)| {
+                if !server_config.is_enabled() {
+                    tracing::info!("⊘ Server is disabled, skipping connection");
+                }
+                server_config.is_enabled()
+            })
+            .collect();
 
-            let handles: Vec<_> = servers
-                .into_iter()
-                .map(|(group_name, server_config)| {
-                    let client = client_init.clone();
-                    tokio::spawn(async move {
-                        let res = {
+        let handles: Vec<_> = servers
+            .into_iter()
+            .map(|(group_name, server_config)| {
+                let client = client_init.clone();
+                tokio::spawn(async move {
+                    let res = {
+                        let mut client_lock = client.write().await;
+                        client_lock
+                            .connect(group_name.clone(), server_config.clone())
+                            .await
+                    };
+                    match res {
+                        Ok(_) => Ok(group_name),
+                        Err(e) => {
                             let mut client_lock = client.write().await;
-                            client_lock
-                                .connect(group_name.clone(), server_config.clone())
-                                .await
-                        };
-                        match res {
-                            Ok(_) => Ok(group_name),
-                            Err(e) => {
-                                let mut client_lock = client.write().await;
-                                client_lock.record_failed_connection(
-                                    group_name.clone(),
-                                    server_config,
-                                    e,
-                                );
-                                Err(group_name)
-                            }
+                            client_lock.record_failed_connection(
+                                group_name.clone(),
+                                server_config,
+                                e,
+                            );
+                            Err(group_name)
                         }
-                    })
+                    }
                 })
-                .collect();
+            })
+            .collect();
 
-            for handle in handles {
-                let _ = handle.await;
-            }
-        }
-    });
+        // 不阻塞启动（回退到原版 1.8.2 行为）：group 连接在后台 tokio::spawn
+        // 任务中继续，run_stdio 立即开始。B1 曾尝试用 3 秒宽限消除冷启动 GNF，
+        // 但该宽限推迟了 run_stdio 就绪，导致连接器在 dmcp 尚未进入 MCP 握手前
+        // 就因握手/健康检查超时而将其杀掉重启，形成每 ~20-30 秒一次的慢速重启
+        // 循环（调用在重启瞬间间歇失败）。原版"立即 run_stdio"握手即时成功，无
+        // 此问题（曾稳定于 PID 4312）。冷启动 GNF 已在配置层 A2 + mimo_mcp.py
+        // 进程树清理处缓解，不值得为消除它而阻塞启动触发重启循环。
+        let _ = handles; // 显式 drop JoinHandle；后台连接任务不被取消
+    }
 
     // Spawn periodic retry handler for failed connections
     let client_retry = client.clone();
