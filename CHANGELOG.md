@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-08-13
+
+### Added
+
+- **`timeout.initialize` 配置项** — 新增可选字段，覆盖后端 MCP 服务器的「连接 + 初始化」全过程（transport 创建 + `initialize` 握手 + 协议版本能力重试 + 首次 `tools/list`），默认值 **120 秒**。用于缓解冷启动慢的重后端（如 `codebase-memory-mcp` 单二进制约 296MB）在旧版 5 秒硬编码超时下反复连接失败（flapping）的问题。与 `tools` / `resources` / `prompts` 相互独立，向后兼容（`Timeout` 结构体在 `deny_unknown_fields` 下为 `initialize` 标注 `serde(default)`，缺失时不报错）。
+
+### Fixed
+
+- **cbm 初始化超时可配置（Path A 治本修复）** — 将 `src/proxy/client.rs` 中 transport 创建、`init_request`、`retry_request`、`list_tools_request` 三处硬编码 `Duration::from_secs(5)` 统一改为 `config.initialize_timeout()`（默认 120s，可经 `timeout.initialize` 配置）。
+- **Failed 自愈重连** — `list_tools` / `call_tool` 在连接处于 `Failed` 状态时，自动触发一次 `connect` 自愈重连（受 `initialize` 超时包裹），并在错误中携带 `group_name` 便于定位；`call_tool` 由 `&self` 调整为 `&mut self` 以支持自愈。
+- **周期重连上限放宽 + 有界退避** — `retry_failed_connections` 的 `MAX_RETRIES` 由 3 次放宽至 10 次，退避策略由无界 `2^n` 秒改为有界 `2 + 5×n` 秒（上限 30 秒），避免重后端因退避指数爆炸而长期不可达。
+- **调用方锁调整** — `src/server.rs` 与 `src/http/server_handler.rs` 中 `list_tools` / `call_tool` 的调用点由读锁改为写锁并补 `.await`，与自愈逻辑（内部 `connect`）的 `&mut self` 借用保持一致。
+
+> 本版本为 cbm 连接超时治本修复（Path A），对应分支 `fix/cbm-init-timeout`，编译与测试由 GitHub Actions CI 回归验证。
+
 ## [1.8.3] - 2026-07-25
 
 ### Fixed

@@ -415,6 +415,7 @@ Config details:
 - 工具调用：30 秒
 - 资源调用：10 秒
 - 提示调用：10 秒
+- 初始化调用（transport 创建 + initialize 握手 + 版本能力重试 + 首次 tools/list）：120 秒
 
 你可以为需要更长时间的服务器自定义：
 
@@ -428,7 +429,8 @@ Config details:
       "timeout": {
         "tools": "1min",
         "resources": "30s",
-        "prompts": "30s"
+        "prompts": "30s",
+        "initialize": "2min"
       }
     }
   }
@@ -446,10 +448,17 @@ Config details:
 
 **行为：**
 
-- 若省略 `timeout`，使用默认值（tools: 30s，resources: 10s，prompts: 10s）
+- 若省略 `timeout`，使用默认值（tools: 30s，resources: 10s，prompts: 10s，initialize: 120s）
 - 单个超时字段若未指定，默认取各自对应的默认值
-- 仅适用于工具 / 资源 / 提示调用操作，不适用于连接或初始化
+- 适用于工具 / 资源 / 提示调用操作；`initialize` 字段专门覆盖连接与初始化阶段（transport 创建 + initialize 握手 + 版本能力重试 + 首次 tools/list）
 - 适用于存在长时间运行操作的服务器（数据库查询、文件处理等）
+
+**`initialize` 字段（新增）：**
+
+- 覆盖后端 MCP 服务器的「连接 + 初始化」全过程：transport 创建、MCP `initialize` 握手、协议版本能力重试、以及首次 `tools/list` 探测。
+- 默认值 **120 秒**。对冷启动慢的重后端（如 `codebase-memory-mcp` 单二进制约 296MB，常驻守护进程单例，最后一个客户端断开即自毁）尤为关键——旧版硬编码 5 秒超时会导致此类后端在 dmcp 启动阶段反复连接失败（flapping）并被标记为 `failed`。
+- 与 `tools` / `resources` / `prompts` 相互独立：可只调大 `initialize` 而保持调用超时不变。
+- 自愈重连：`list_tools` / `call_tool` 在连接处于 `Failed` 状态时，会自动触发一次 `connect` 自愈（受 `initialize` 超时包裹）；周期重连上限由 3 次放宽至 10 次，并采用有界退避（2 + 5×n 秒，上限 30 秒），避免重后端长期处于不可用态。
 
 ### Dynamic 启动（含命令行启动）
 

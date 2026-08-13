@@ -263,9 +263,9 @@ Example usage:
                     };
                 }
 
-                let client = self.client.read().await;
+                let mut client = self.client.write().await;
                 let g = group.unwrap();
-                match client.list_tools(g) {
+                match client.list_tools(g).await {
                     Ok(tools) => {
                         let mode = arguments
                             .get("mode")
@@ -409,7 +409,7 @@ Example usage:
                     };
                 }
 
-                let client = self.client.read().await;
+                let mut client = self.client.write().await;
                 match client.call_tool(group.unwrap(), name.unwrap(), args).await {
                     Ok(result) => JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),

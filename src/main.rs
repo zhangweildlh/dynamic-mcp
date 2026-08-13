@@ -410,7 +410,7 @@ async fn run_server(
     // Spawn periodic retry handler for failed connections
     let client_retry = client.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
         interval.tick().await;
 
         loop {

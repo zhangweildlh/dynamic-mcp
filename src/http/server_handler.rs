@@ -90,7 +90,7 @@ impl HttpFacadeHandler {
     }
 
     async fn call_tool_inner(&self, name: &str, arguments: serde_json::Value) -> CallToolResult {
-        let client = self.client.read().await;
+        let mut client = self.client.write().await;
 
         let text_result: Result<String, String> = match name {
             "list_groups" => {
@@ -120,7 +120,7 @@ impl HttpFacadeHandler {
                 let group = arguments.get("group").and_then(|v| v.as_str());
                 match group {
                     None => Err("Missing required parameter: group".to_string()),
-                    Some(g) => match client.list_tools(g) {
+                    Some(g) => match client.list_tools(g).await {
                         Ok(tools) => {
                             let mode = arguments
                                 .get("mode")
