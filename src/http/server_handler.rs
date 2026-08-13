@@ -90,7 +90,7 @@ impl HttpFacadeHandler {
     }
 
     async fn call_tool_inner(&self, name: &str, arguments: serde_json::Value) -> CallToolResult {
-        let client = self.client.write().await;
+        let mut client = self.client.write().await;
 
         let text_result: Result<String, String> = match name {
             "list_groups" => {
