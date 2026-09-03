@@ -700,7 +700,14 @@ pub fn show_popup(title: &str, message: &str) {
         // `-t` 单位是毫秒。部分桌面实现会忽略该超时，但通知本身仍可手动点掉。
         let timeout_ms = POPUP_TIMEOUT_SECS.saturating_mul(1000);
         let _ = std::process::Command::new("notify-send")
-            .args(["-u", "critical", "-t", &timeout_ms.to_string(), title, message])
+            .args([
+                "-u",
+                "critical",
+                "-t",
+                &timeout_ms.to_string(),
+                title,
+                message,
+            ])
             .output();
     }
 }
@@ -755,7 +762,10 @@ pub async fn check_singleton(
     match try_acquire_lock(endpoint, &my_lock) {
         Ok(AcquireResult::Acquired) => SingletonResult {
             mode: StartMode::Normal,
-            guard: Some(InstanceGuard::Lock(LockGuard::new(lock_file_path(endpoint), my_pid))),
+            guard: Some(InstanceGuard::Lock(LockGuard::new(
+                lock_file_path(endpoint),
+                my_pid,
+            ))),
             popup: PopupCollector::new(),
         },
         Ok(AcquireResult::Conflict(old)) => {
