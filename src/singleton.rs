@@ -811,9 +811,12 @@ pub async fn check_singleton(
                     // 与旧实例合法并存（R0/R1）。此前复用"双开浪费"的兜底文案纯属
                     // 误导 —— 这里并没有任何资源被浪费，必须讲清楚。
                     popup.add_double_open(keep_stdio_msg(transport, &old));
+                    // 写一份登记文件，让这个 stdio 实例在 `dmcp status` 里可见
+                    // （否则它就从"有记录的 stdio"退化为"看不见的幽灵"）。
+                    let guard = register_stdio_instance(config_path).map(InstanceGuard::Registry);
                     SingletonResult {
                         mode: StartMode::StdioOnly,
-                        guard: None,
+                        guard,
                         popup,
                     }
                 }
@@ -1173,5 +1176,23 @@ mod tests {
         let msg = keep_stdio_msg(TransportMode::Both, &lock("http", true));
         assert!(msg.contains("--no-evict"), "应说明是 --no-evict 生效：{msg}");
         assert!(!msg.contains("双开浪费"), "和平共存不是浪费：{msg}");
+    }
+
+    // ---- M1 修复：降级为 stdio-only 时必须写登记文件 ----
+
+    #[test]
+    fn register_stdio_instance_writes_visible_file() {
+        // 一个 both 实例因端口冲突降级为 stdio-only 后，必须写登记文件，
+        // 否则它在 `dmcp status` 里就完全不可见（M1）。
+        let guard = register_stdio_instance(Some("D:/test/config.json"));
+        assert!(guard.is_some(), "registry 必须成功返回 guard");
+
+        // 清理：让 RegistryGuard Drop 删除它
+        drop(guard);
+
+        // 验证登记目录干净（无本次 pid 的残留）
+        let pid = std::process::id();
+        let path = stdio_registry_path(pid);
+        assert!(!path.exists(), "登记文件应在 guard drop 后自动删除");
     }
 }
