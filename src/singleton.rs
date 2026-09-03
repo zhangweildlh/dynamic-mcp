@@ -147,6 +147,7 @@ pub struct SingletonResult {
 /// 两类实例各留一种痕迹，但**只有锁参与仲裁**：
 /// * HTTP 域（http/both）写锁文件 —— 争端口，必须仲裁（R0）；
 /// * STDIO 域写登记文件 —— 不争端口，仅用于 `dmcp status` 查询，从不参与仲裁。
+#[allow(dead_code)]
 pub enum InstanceGuard {
     /// HTTP 域：持有端点锁，退出时删除属于自己的锁文件。
     Lock(LockGuard),
