@@ -19,15 +19,40 @@
 //!
 //! ## Decisions (see [`decide`])
 //!
-//! * new `http` vs existing `both` / `http` -> **self-terminate** after 8s
-//!   (a pure-http instance with no HTTP is useless; the existing instance is reused).
+//! The decision is expressed as the rule set (R0–R4) below rather than as an
+//! ad-hoc lookup table, so that every branch follows from the same two facts:
+//! the **mode priority** and whether the new instance still has a usable
+//! channel after losing HTTP.
+//!
+//! * **R0 域划分**：只有会争端口的 HTTP 域（http/both）参与仲裁；纯 stdio
+//!   不绑端口，豁免仲裁（允许 N 个并存）。
+//! * **R1 复用性**：http/both 支持多程序复用；stdio 受操作系统管道约束不可复用。
+//! * **R2 优先级**：`both`(3) > `http`(2) > `stdio`(1)，以模式向下兼容为准，
+//!   不以启动顺序为准。
+//! * **R3 仲裁动作**：新优先级 > 旧 -> 驱逐旧、新接管；新优先级 <= 旧 ->
+//!   新让位（自带 stdio 则降级为 stdio-only，否则自终止复用旧实例）。
+//! * **R4 唯一例外**：`--no-evict` 仅豁免"新 both 驱逐旧 http"这一格（唯一含
+//!   杀伤性动作者）。
+//!
+//! Concretely:
+//!
+//! * new `http` vs existing `both` / `http` -> **self-terminate** after
+//!   [`POPUP_TIMEOUT_SECS`] (a pure-http instance with no HTTP is useless; the
+//!   existing instance is reused).
 //! * new `both` vs existing `http` (`allow_dual=false`) -> **kill old http**,
 //!   stdio starts immediately, HTTP starts 8s later (port is free by then).
 //! * new `both` vs existing `http` (`allow_dual=true`) -> **keep stdio only**,
-//!   HTTP intentionally off, warn about the waste, do not kill the old http.
-//! * new `both` vs existing `both` -> **keep stdio only**, HTTP off, warn, no kill.
+//!   HTTP intentionally off, no kill. **This is intended coexistence, not
+//!   waste** — see [`keep_stdio_msg`].
+//! * new `both` vs existing `both` -> **keep stdio only**, HTTP off, no kill.
+//!   A `both` that loses HTTP is no longer a `both`: it has become a stdio
+//!   instance and therefore lawfully coexists in the stdio domain
+//!   (**降级即转域**).
 //!
-//! A pure `stdio` instance never touches the port, so detection is skipped for it.
+//! A pure `stdio` instance never touches the port, so detection is skipped for
+//! it. It nevertheless **registers** a file under `~/.dynamic-mcp/instances/`
+//! so that `dmcp status` can list it — registration never participates in
+//! arbitration.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -37,6 +62,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::TransportMode;
+
+/// 弹窗最长展示时长（秒）。超过该时长后自动关闭；用户可随时手动提前关闭。
+/// 同时用于 SelfTerminate 实例的退出等待，确保弹窗能被完整读完。
+pub const POPUP_TIMEOUT_SECS: u64 = 15;
 
 /// On-disk record describing a running dynamic-mcp instance that owns an endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +83,17 @@ pub struct InstanceLock {
     pub exe_path: String,
     /// RFC3339 timestamp when the lock was written (diagnostics only).
     pub started_at: String,
+    /// 实例加载的配置文件路径（来自 `--config` 参数或 `DYNAMIC_MCP_CONFIG`）。
+    ///
+    /// 仅用于**提示**（对比新旧实例是否用同一份配置），**绝不参与锁键计算**：
+    /// 一旦把配置身份并入锁键，同端口不同配置的两个实例就会跳过仲裁、同时去
+    /// bind 同一端口，后者必然失败，服务反而起不来。
+    ///
+    /// **必须 `serde(default)`**：1.9.0 之前写入的锁文件没有此字段。若声明为必
+    /// 填，旧锁会被 `try_acquire_lock` 当成"损坏锁"删除，新实例误判端口无主并
+    /// 直冲 bind，最终因端口被旧实例占着而启动失败。
+    #[serde(default)]
+    pub config_path: Option<String>,
 }
 
 /// Pure decision produced by [`decide`] from the new transport + the existing lock.
@@ -61,7 +101,8 @@ pub struct InstanceLock {
 pub enum DecisionKind {
     /// No relevant conflict.
     None,
-    /// New instance is a redundant `http` -> self-terminate after 8s.
+    /// New instance is a redundant `http` -> self-terminate after
+    /// [`POPUP_TIMEOUT_SECS`] (it has no HTTP, so it cannot serve anything).
     SelfTerminate,
     /// New `both` may evict the old `http` -> kill old, start HTTP after 8s.
     KillOldThenStartHttp,
@@ -86,17 +127,31 @@ pub enum StartMode {
     StdioOnly,
     /// B1: stdio starts now, HTTP is delayed 8s (after evicting old http).
     DelayHttpThenNormal,
-    /// A1/A3: redundant http — caller shows popup, waits 8s, exits.
+    /// A1/A3: redundant http — caller shows popup, waits [`POPUP_TIMEOUT_SECS`]
+    /// so the popup can be read in full, then exits.
     SelfTerminate,
 }
 
 /// What [`check_singleton`] returns to `run_server`.
 pub struct SingletonResult {
     pub mode: StartMode,
-    /// Guard that deletes our own lock file on process exit (if we own one).
-    pub guard: Option<LockGuard>,
+    /// Guard that releases whatever this instance registered: a lock file for
+    /// http/both, a registration file for stdio.
+    pub guard: Option<InstanceGuard>,
     /// Warnings/info gathered for the user (layer1 = double-open, layer2 = port).
     pub popup: PopupCollector,
+}
+
+/// 本实例留在磁盘上的那份"存在证明"，进程退出时由 Drop 自动清理。
+///
+/// 两类实例各留一种痕迹，但**只有锁参与仲裁**：
+/// * HTTP 域（http/both）写锁文件 —— 争端口，必须仲裁（R0）；
+/// * STDIO 域写登记文件 —— 不争端口，仅用于 `dmcp status` 查询，从不参与仲裁。
+pub enum InstanceGuard {
+    /// HTTP 域：持有端点锁，退出时删除属于自己的锁文件。
+    Lock(LockGuard),
+    /// STDIO 域：登记自身信息供查询，退出时删除登记文件。
+    Registry(RegistryGuard),
 }
 
 // ---------------------------------------------------------------------------
@@ -144,20 +199,76 @@ fn transport_str(t: TransportMode) -> &'static str {
     }
 }
 
+/// 反解锁文件里记录的传输模式字符串；无法识别时返回 `None`（视为无关冲突）。
+fn parse_transport(s: &str) -> Option<TransportMode> {
+    match s {
+        "stdio" => Some(TransportMode::Stdio),
+        "http" => Some(TransportMode::Http),
+        "both" => Some(TransportMode::Both),
+        _ => None,
+    }
+}
+
+/// **R2 优先级**：`both`(3) > `http`(2) > `stdio`(1)。
+///
+/// 按模式的"向下兼容能力"排序：数值越大表示能提供的通道越全。**与启动顺序
+/// 无关** —— 后来者不一定赢，通道更全的一方才赢。
+fn transport_priority(t: TransportMode) -> u8 {
+    match t {
+        TransportMode::Stdio => 1,
+        TransportMode::Http => 2,
+        TransportMode::Both => 3,
+    }
+}
+
+/// 该模式是否自带 stdio 通道 —— 决定了它"丢掉 HTTP 之后还有没有存在价值"
+/// （R1）：`both` 丢掉 HTTP 还剩 stdio，可以降级并存；`http` 丢掉 HTTP 就一
+/// 无所有，只能自终止。
+fn has_stdio(t: TransportMode) -> bool {
+    matches!(t, TransportMode::Stdio | TransportMode::Both)
+}
+
 /// Decide what a new instance should do given its transport and the existing lock.
 ///
 /// Pure: no I/O, no time. Easy to unit test every branch.
+///
+/// 决策由 R0–R4 规则集推导，而非逐格硬编码匹配：
+/// * R0 任一侧属于 STDIO 域即不参与仲裁（不争端口）；
+/// * R2/R3 新优先级更高则驱逐旧实例，否则新实例让位；
+/// * R1 让位方式取决于新模式是否自带 stdio；
+/// * R4 仅"驱逐"这一格受 `--no-evict` 豁免。
 pub fn decide(new_transport: TransportMode, old: &InstanceLock) -> DecisionKind {
-    match (new_transport, old.transport.as_str()) {
-        // New http is always the redundant party -> it cannot work without HTTP.
-        (TransportMode::Http, "both") => DecisionKind::SelfTerminate,
-        (TransportMode::Http, "http") => DecisionKind::SelfTerminate,
-        // New both vs old http: evict only if the old http did not opt out.
-        (TransportMode::Both, "http") if !old.allow_dual => DecisionKind::KillOldThenStartHttp,
-        (TransportMode::Both, "http") => DecisionKind::KeepStdioHttpOff,
-        // New both vs old both: both is the superset; keep stdio, skip HTTP.
-        (TransportMode::Both, "both") => DecisionKind::KeepStdioHttpOff,
-        _ => DecisionKind::None,
+    let old_transport = match parse_transport(old.transport.as_str()) {
+        Some(t) => t,
+        // 锁里是无法识别的模式 -> 不做任何猜测，按无关冲突处理。
+        None => return DecisionKind::None,
+    };
+    // R0：任一侧不争端口，就不存在需要仲裁的冲突。
+    if matches!(new_transport, TransportMode::Stdio)
+        || matches!(old_transport, TransportMode::Stdio)
+    {
+        return DecisionKind::None;
+    }
+
+    // R3 上半：新优先级更高 -> 驱逐旧实例、由新实例接管端口。
+    if transport_priority(new_transport) > transport_priority(old_transport) {
+        // R4：这是唯一含杀伤性动作的一格（both 驱逐 http），也是 `--no-evict`
+        // 唯一的作用域；旧实例上锁时改为和平共存。
+        return if old.allow_dual {
+            DecisionKind::KeepStdioHttpOff
+        } else {
+            DecisionKind::KillOldThenStartHttp
+        };
+    }
+
+    // R3 下半：新优先级不高于旧实例 -> 新实例让位。
+    if has_stdio(new_transport) {
+        // R1：`both` 让出 HTTP 后仍有 stdio，降级为 stdio 实例即可合法并存
+        // （降级即转域）。这是预期行为，不是双开浪费。
+        DecisionKind::KeepStdioHttpOff
+    } else {
+        // `http` 让出 HTTP 后一无所有，只能自终止，让调用方去复用旧实例。
+        DecisionKind::SelfTerminate
     }
 }
 
@@ -244,6 +355,63 @@ impl Drop for LockGuard {
             }
         }
     }
+}
+
+/// 登记文件目录：`~/.dynamic-mcp/instances/`。
+///
+/// 用于存放 stdio 实例的登记文件。stdio 实例不绑端口、不写锁，原本在磁盘上
+/// 不留任何痕迹，因而无法被查询和治理（"行为碰巧正确，但机制缺失"）。登记
+/// 文件**只供 `dmcp status` 读取，从不参与仲裁**（R0：STDIO 域豁免仲裁）。
+pub fn instances_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".dynamic-mcp")
+        .join("instances")
+}
+
+/// 登记文件路径：`~/.dynamic-mcp/instances/stdio-<pid>.json`。
+fn stdio_registry_path(pid: u32) -> PathBuf {
+    instances_dir().join(format!("stdio-{}.json", pid))
+}
+
+/// RAII guard：进程退出时删除本实例的 stdio 登记文件。
+///
+/// 与 [`LockGuard`] 的区别：登记文件不参与仲裁，因此无需再校验内容是否仍属
+/// 于自己 —— 文件名自带 pid，只有本进程会写它。
+pub struct RegistryGuard {
+    path: PathBuf,
+}
+
+impl Drop for RegistryGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// 为 stdio 实例写一份登记文件（best-effort：写失败也照常启动）。
+///
+/// stdio 实例不争端口、本就无需仲裁，写登记文件的唯一目的是让它出现在
+/// `dmcp status` 里，从"看不见"变成"可查询"。
+fn register_stdio_instance(config_path: Option<&str>) -> Option<RegistryGuard> {
+    let dir = instances_dir();
+    fs::create_dir_all(&dir).ok()?;
+    let pid = std::process::id();
+    let path = stdio_registry_path(pid);
+    let record = InstanceLock {
+        pid,
+        transport: transport_str(TransportMode::Stdio).to_string(),
+        allow_dual: false,
+        // stdio 没有 HTTP 端点；空串表示"不适用"。
+        endpoint: String::new(),
+        exe_path: std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        config_path: config_path.map(|s| s.to_string()),
+    };
+    let content = serde_json::to_string_pretty(&record).ok()?;
+    fs::write(&path, content).ok()?;
+    Some(RegistryGuard { path })
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +538,7 @@ pub struct PopupCollector {
     info: Option<String>,
     layer1: Option<String>, // double-open / redundant warning (warn! level)
     layer2: Option<String>, // port conflict (warn! level)
+    layer3: Option<String>, // config mismatch (warn! level)
 }
 
 impl PopupCollector {
@@ -378,6 +547,7 @@ impl PopupCollector {
             info: None,
             layer1: None,
             layer2: None,
+            layer3: None,
         }
     }
 
@@ -399,6 +569,12 @@ impl PopupCollector {
         tracing::warn!("{}", self.layer2.as_ref().unwrap());
     }
 
+    /// Layer 3: 新旧实例用的不是同一份配置文件（复用旧实例 = 用它那份配置）。
+    pub fn add_config_mismatch(&mut self, msg: impl Into<String>) {
+        self.layer3 = Some(msg.into());
+        tracing::warn!("{}", self.layer3.as_ref().unwrap());
+    }
+
     /// Emit a single combined popup (if anything was collected).
     pub fn emit(&self) {
         let mut lines: Vec<String> = Vec::new();
@@ -411,45 +587,93 @@ impl PopupCollector {
         if let Some(l) = &self.layer2 {
             lines.push(l.clone());
         }
+        if let Some(l) = &self.layer3 {
+            lines.push(l.clone());
+        }
         if lines.is_empty() {
             return;
         }
         let combined = lines.join("\n\n");
-        let level = if self.layer1.is_some() || self.layer2.is_some() {
-            "告警"
-        } else {
-            "提示"
-        };
+        let warned = self.layer1.is_some() || self.layer2.is_some() || self.layer3.is_some();
+        let level = if warned { "告警" } else { "提示" };
         show_popup(&format!("dynamic-mcp {}", level), &combined);
     }
 }
 
-/// Show a user-facing popup.
+impl Default for PopupCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Show a user-facing popup that **closes itself after [`POPUP_TIMEOUT_SECS`]
+/// seconds and can also be dismissed by the user at any time**.
 ///
-/// * Windows: a real, manually-closable `MessageBoxW` on a background thread
-///   (so it never blocks the server).
-/// * macOS: `osascript display dialog` (best-effort).
-/// * Linux: `notify-send` if available, else nothing (the stderr line below
-///   is always printed for headless servers).
-/// * All platforms also print to stderr (logs / no-GUI fallback).
+/// * Windows: a real `MessageBoxW` on a background thread (so it never blocks
+///   the server). A second thread locates the box by its exact title and posts
+///   `WM_CLOSE` once the timeout elapses; if the user clicks OK first the window
+///   is already gone and the closer thread simply exits.
+/// * macOS: `osascript display dialog ... giving up after N` (native timeout).
+/// * Linux: `notify-send -t <ms>` (best-effort — some desktop implementations
+///   ignore the timeout, but the notification stays manually dismissible).
+/// * All platforms also print to stderr (logs / headless fallback), which is the
+///   only channel available on a server without a GUI.
 pub fn show_popup(title: &str, message: &str) {
     eprintln!("[{}] {}", title, message);
 
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, IsWindow, MessageBoxW, PostMessageW, MB_ICONWARNING, WM_CLOSE,
+        };
         let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         let msg_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
-        // `move` the Vecs into the thread so the UTF-16 buffers outlive the call.
-        // `HWND` is a type alias in windows-sys (not a tuple struct), so pass a
-        // null handle directly rather than constructing it.
+
+        // 线程 A：弹出消息框，一直阻塞到用户点击或收到 WM_CLOSE 为止。
+        // `move` 让 UTF-16 缓冲区的生命周期长于本次调用。
+        // 注：windows-sys 里 `HWND` 是类型别名而非元组结构体，故直接传空句柄。
+        let title_for_box = title_w.clone();
         std::thread::spawn(move || unsafe {
             MessageBoxW(
                 std::ptr::null_mut(),
                 msg_w.as_ptr(),
-                title_w.as_ptr(),
+                title_for_box.as_ptr(),
                 MB_ICONWARNING,
             );
+        });
+
+        // 线程 B：超时后自动关闭。用户提前点掉时 `IsWindow` 变为 0，本线程随即
+        // 退出，不会误伤任何窗口。
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(POPUP_TIMEOUT_SECS);
+            let poll = Duration::from_millis(200);
+            // 阶段一：等窗口被创建出来（它由线程 A 创建，需要一点点时间）。
+            // 标题为精确匹配且由本程序独有，误匹配他人窗口的概率可忽略。
+            let mut target = None;
+            while std::time::Instant::now() < deadline {
+                let hwnd = unsafe { FindWindowW(std::ptr::null(), title_w.as_ptr()) };
+                if unsafe { IsWindow(hwnd) } != 0 {
+                    target = Some(hwnd);
+                    break;
+                }
+                std::thread::sleep(poll);
+            }
+            let hwnd = match target {
+                Some(h) => h,
+                // 窗口始终没出现（例如无桌面会话）：放弃自动关闭，什么都不做。
+                None => return,
+            };
+            // 阶段二：守到截止时间；期间用户手动关闭则立即收工。
+            loop {
+                if unsafe { IsWindow(hwnd) } == 0 {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+                    return;
+                }
+                std::thread::sleep(poll);
+            }
         });
     }
     #[cfg(target_os = "macos")]
@@ -462,15 +686,21 @@ pub fn show_popup(title: &str, message: &str) {
             .collect::<Vec<_>>()
             .join("\" & return & \"");
         let title_esc = esc(&title);
-        let script = format!("display dialog \"{}\" with title \"{}\"", joined, title_esc);
+        // `giving up after N` = N 秒后自动关闭；用户点按钮可随时提前关闭。
+        let script = format!(
+            "display dialog \"{}\" with title \"{}\" buttons {{\"好\"}} default button \"好\" giving up after {}",
+            joined, title_esc, POPUP_TIMEOUT_SECS
+        );
         let _ = std::process::Command::new("osascript")
             .args(["-e", &script])
             .spawn();
     }
     #[cfg(target_os = "linux")]
     {
+        // `-t` 单位是毫秒。部分桌面实现会忽略该超时，但通知本身仍可手动点掉。
+        let timeout_ms = POPUP_TIMEOUT_SECS.saturating_mul(1000);
         let _ = std::process::Command::new("notify-send")
-            .args(["-u", "critical", title, message])
+            .args(["-u", "critical", "-t", &timeout_ms.to_string(), title, message])
             .output();
     }
 }
@@ -485,17 +715,23 @@ pub fn show_popup(title: &str, message: &str) {
 /// redundant `http` instance wastes no work before it self-terminates. The
 /// endpoint is identified by `host:port/path` (the single `--http-endpoint` CLI arg,
 /// form `host:port/path`); two instances on different endpoints are independent.
+///
+/// `config_path` is used **only** for diagnostics: the layer-3 config-mismatch
+/// warning and the registration record listed by `dmcp status`. It is
+/// deliberately **not** part of the lock key.
 pub async fn check_singleton(
     transport: TransportMode,
     endpoint: &str,
     display_addr: &str,
     allow_dual: bool,
+    config_path: Option<&str>,
 ) -> SingletonResult {
-    // Stdio never binds a port -> nothing to detect, no lock to write.
+    // STDIO 域：不绑端口 -> 不需要仲裁，也不写锁。但仍写一份登记文件，让这个
+    // 实例在 `dmcp status` 里可见（此前 stdio 实例在磁盘上不留任何痕迹）。
     if matches!(transport, TransportMode::Stdio) {
         return SingletonResult {
             mode: StartMode::Normal,
-            guard: None,
+            guard: register_stdio_instance(config_path).map(InstanceGuard::Registry),
             popup: PopupCollector::new(),
         };
     }
@@ -513,12 +749,13 @@ pub async fn check_singleton(
         endpoint: endpoint.to_string(),
         exe_path,
         started_at: chrono::Utc::now().to_rfc3339(),
+        config_path: config_path.map(|s| s.to_string()),
     };
 
     match try_acquire_lock(endpoint, &my_lock) {
         Ok(AcquireResult::Acquired) => SingletonResult {
             mode: StartMode::Normal,
-            guard: Some(LockGuard::new(lock_file_path(endpoint), my_pid)),
+            guard: Some(InstanceGuard::Lock(LockGuard::new(lock_file_path(endpoint), my_pid))),
             popup: PopupCollector::new(),
         },
         Ok(AcquireResult::Conflict(old)) => {
@@ -533,6 +770,12 @@ pub async fn check_singleton(
                 DecisionKind::SelfTerminate => {
                     popup.add_double_open(double_open_msg(transport, &old));
                     popup.add_port_conflict(port_conflict_msg(&old, display_addr));
+                    // 自终止 = 复用旧实例，也就意味着沿用**旧实例那份配置**。若两
+                    // 份配置不同，调用方会静默拿到别的项目/别份配置下的工具集 ——
+                    // 这是最危险的一种静默串味，必须明确告知，不能默默了事。
+                    if let Some(msg) = config_mismatch_msg(config_path, &old) {
+                        popup.add_config_mismatch(msg);
+                    }
                     SingletonResult {
                         mode: StartMode::SelfTerminate,
                         guard: None,
@@ -555,15 +798,19 @@ pub async fn check_singleton(
                     );
                     SingletonResult {
                         mode: StartMode::DelayHttpThenNormal,
-                        guard: Some(LockGuard::new(lock_file_path(endpoint), my_pid)),
+                        guard: Some(InstanceGuard::Lock(LockGuard::new(
+                            lock_file_path(endpoint),
+                            my_pid,
+                        ))),
                         popup,
                     }
                 }
                 DecisionKind::KeepStdioHttpOff => {
-                    popup.add_double_open(
-                        "检测到同端口已有 dynamic-mcp 实例在运行，存在双开浪费；本次仅启用 stdio，HTTP 功能未启用。"
-                            .to_string(),
-                    );
+                    // 降级为 stdio-only 属于**预期行为**：本实例让出 HTTP 后已不再
+                    // 持有 HTTP 通道，按「降级即转域」它就是一个普通的 stdio 实例，
+                    // 与旧实例合法并存（R0/R1）。此前复用"双开浪费"的兜底文案纯属
+                    // 误导 —— 这里并没有任何资源被浪费，必须讲清楚。
+                    popup.add_double_open(keep_stdio_msg(transport, &old));
                     SingletonResult {
                         mode: StartMode::StdioOnly,
                         guard: None,
@@ -614,6 +861,145 @@ fn port_conflict_msg(old: &InstanceLock, addr: &str) -> String {
     }
 }
 
+/// 把锁/登记记录里的实例身份拼成一行人话，供告警文案直接引用。
+/// 形如：`PID 4312 · both 模式 · 启动于 2026-09-02T11:20:33Z · 配置 /x/dynamic-mcp.json`
+fn describe_instance(old: &InstanceLock) -> String {
+    let cfg = match old.config_path.as_deref() {
+        Some(p) if !p.is_empty() => format!(" · 配置 {}", p),
+        _ => String::new(),
+    };
+    format!(
+        "PID {} · {} 模式 · 启动于 {}{}",
+        old.pid, old.transport, old.started_at, cfg
+    )
+}
+
+/// Layer-1 文案：新实例让出 HTTP、降级为 stdio-only 的情形（#12 格）。
+///
+/// 进入这一格的路径有两条（both vs both、both vs 带 `--no-evict` 的 http），
+/// 二者都属于**设计好的和平共存**，既不是错误也不是浪费。文案要做的三件事：
+/// ① 报出旧实例身份，让用户能判断要不要去关它；② 说明本次少了什么（只有
+/// HTTP 没起，stdio 照常可用）；③ 明确告知这是预期行为，消除"是不是坏了"的疑虑。
+fn keep_stdio_msg(new: TransportMode, old: &InstanceLock) -> String {
+    let who = describe_instance(old);
+    match (new, old.transport.as_str()) {
+        (TransportMode::Both, "both") => format!(
+            "同端口已有一个 both 模式实例在运行（{}）。\n\
+             本次不重复占用该端口：仅启用 stdio，HTTP 不启用 —— 这是设计好的共存方式\
+             （端口归先来的进程，后来者走 stdio），属于正常现象，无需处理。\n\
+             若确实希望本次接管 HTTP 端口，请先关闭上面那个实例。",
+            who
+        ),
+        (TransportMode::Both, "http") => format!(
+            "同端口已有一个带 --no-evict 的 http 实例在运行（{}）。\n\
+             按该参数的约定不驱逐它：本次仅启用 stdio，HTTP 不启用，二者和平共存 ——\
+             这正是 --no-evict 预期的结果，不是异常。\n\
+             若希望本次改为接管端口，请去掉那个实例的 --no-evict 后重启它。",
+            who
+        ),
+        _ => format!(
+            "同端口已有一个 {} 模式实例在运行（{}）。\n本次仅启用 stdio，HTTP 不启用，二者共存。",
+            old.transport, who
+        ),
+    }
+}
+
+/// Layer-3 文案：新旧实例加载的不是同一份配置文件（#2）。
+///
+/// 只在**双方配置都已知且确实不同**时返回 `Some`，信息不全就闭嘴，避免瞎告警。
+/// 比较前先 `canonicalize` 归一化（消除 `./`、`..`、符号链接等差异）；归一化
+/// 失败（例如文件不存在）时退回原始字符串比较。
+///
+/// **注意**：配置身份只用于提示，**绝不能并入锁键** —— 否则同端口不同配置的
+/// 两个实例会跳过仲裁、同时去 bind 同一端口，后者必然失败，服务反而起不来。
+fn config_mismatch_msg(our: Option<&str>, old: &InstanceLock) -> Option<String> {
+    let ours = our.unwrap_or_default().trim();
+    let theirs = old.config_path.as_deref().unwrap_or_default().trim();
+    if ours.is_empty() || theirs.is_empty() {
+        return None;
+    }
+    let norm = |p: &str| {
+        std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_string())
+    };
+    let a = norm(ours);
+    let b = norm(theirs);
+    if a == b {
+        return None;
+    }
+    Some(format!(
+        "⚠️ 配置不一致：本次要加载的是\n  {}\n但同端口已在运行的实例（PID {}）加载的是\n  {}\n\
+         本次将复用那个实例，因此你实际拿到的工具集来自**它的配置**，而非上面第一份。\n\
+         若这属于两个不同项目，请给它们配置不同的 --http-endpoint（端口或路径不同即可）。",
+        a, old.pid, b
+    ))
+}
+
+/// 一条实例的来源类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceKind {
+    /// HTTP 域：持有端点锁，参与端口仲裁。
+    Lock,
+    /// STDIO 域：仅登记，从不参与仲裁（R0）。
+    Registry,
+}
+
+/// `dmcp status` 的一行输出：实例记录 + 来源类型 + 当前是否存活。
+pub struct InstanceEntry {
+    pub record: InstanceLock,
+    pub kind: InstanceKind,
+    /// pid 存活且确实是同一个 dynamic-mcp 可执行程序（防止 pid 复用误报）。
+    pub alive: bool,
+}
+
+/// 扫描 `locks/` 与 `instances/`，列出当前所有已知实例（供 `dmcp status` 使用）。
+///
+/// 纯读取，不修改任何文件：过期记录的清理由各自持有者在退出时完成。这里只是
+/// 把"看不见的运行中实例"变成一张可查询的清单。
+pub fn list_instances() -> Vec<InstanceEntry> {
+    let mut out = Vec::new();
+    for (dir, kind) in [
+        (lock_dir(), InstanceKind::Lock),
+        (instances_dir(), InstanceKind::Registry),
+    ] {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // 两类记录的扩展名不同：端点锁是 `.lock`，stdio 登记文件是 `.json`。
+            let expected = match kind {
+                InstanceKind::Lock => "lock",
+                InstanceKind::Registry => "json",
+            };
+            if path.extension().and_then(|s| s.to_str()) != Some(expected) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<InstanceLock>(&content) else {
+                continue;
+            };
+            // 登记文件只在持有者正常退出时删除；进程被强杀会残留，所以这里用
+            // "pid 存活 + 同路径可执行程序"来判定，避免把残留文件当成活实例。
+            let alive = is_pid_alive(record.pid) && is_same_binary(record.pid, &record.exe_path);
+            out.push(InstanceEntry {
+                record,
+                kind,
+                alive,
+            });
+        }
+    }
+    // 端口实例（HTTP 域）排在前，其次按端点、pid 排序，保证输出稳定可比对。
+    // 用三次稳定排序代替复合 key，避免超宽行。
+    out.sort_by_key(|e| e.record.pid);
+    out.sort_by_key(|e| e.record.endpoint.clone());
+    out.sort_by_key(|e| e.kind != InstanceKind::Lock);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +1012,7 @@ mod tests {
             endpoint: "127.0.0.1:8082/dynamic-mcp".to_string(),
             exe_path: "/usr/bin/dmcp".to_string(),
             started_at: "2026-07-14T00:00:00Z".to_string(),
+            config_path: None,
         }
     }
 
@@ -681,5 +1068,110 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_eq!(a.len(), 16);
+    }
+
+    // ---- R0：STDIO 域豁免仲裁 ----
+
+    #[test]
+    fn decide_stdio_never_arbitrates() {
+        // 任一侧属于 STDIO 域（不争端口）即不产生仲裁动作。
+        for old in ["stdio", "http", "both"] {
+            assert_eq!(
+                decide(TransportMode::Stdio, &lock(old, false)),
+                DecisionKind::None
+            );
+        }
+        assert_eq!(
+            decide(TransportMode::Http, &lock("stdio", false)),
+            DecisionKind::None
+        );
+        assert_eq!(
+            decide(TransportMode::Both, &lock("stdio", false)),
+            DecisionKind::None
+        );
+    }
+
+    // ---- R1/R2：优先级与"让位后能否存活" ----
+
+    #[test]
+    fn decide_priority_is_mode_compatibility_not_launch_order() {
+        assert_eq!(transport_priority(TransportMode::Both), 3);
+        assert_eq!(transport_priority(TransportMode::Http), 2);
+        assert_eq!(transport_priority(TransportMode::Stdio), 1);
+        // 自带 stdio 者让出 HTTP 后仍有价值，可降级并存；http 则一无所有。
+        assert!(has_stdio(TransportMode::Both));
+        assert!(has_stdio(TransportMode::Stdio));
+        assert!(!has_stdio(TransportMode::Http));
+    }
+
+    #[test]
+    fn decide_unknown_old_transport_is_no_conflict() {
+        // 锁里是无法识别的模式：不做猜测，按无关冲突处理。
+        let weird = lock("weird", false);
+        assert_eq!(decide(TransportMode::Both, &weird), DecisionKind::None);
+        assert_eq!(decide(TransportMode::Http, &weird), DecisionKind::None);
+    }
+
+    // ---- #2：配置一致性告警 ----
+
+    #[test]
+    fn config_mismatch_only_warns_when_both_known_and_different() {
+        // 信息不全（任一侧未知）时不告警 —— 不瞎报。
+        let unknown_old = config_mismatch_msg(Some("/a/x.json"), &lock("both", false));
+        assert!(unknown_old.is_none());
+        assert!(config_mismatch_msg(None, &lock("both", false)).is_none());
+        // 同一份配置 -> 不告警。
+        let mut same = lock("both", false);
+        same.config_path = Some("/a/x.json".to_string());
+        assert!(config_mismatch_msg(Some("/a/x.json"), &same).is_none());
+        // 确实是两份配置 -> 告警，且两份路径都要点出来。
+        let mut other = lock("both", false);
+        other.config_path = Some("/b/y.json".to_string());
+        let mismatch = config_mismatch_msg(Some("/a/x.json"), &other);
+        let msg = mismatch.expect("配置不同应告警");
+        assert!(msg.contains("/a/x.json"), "应点出本次配置：{msg}");
+        assert!(msg.contains("/b/y.json"), "应点出旧实例配置：{msg}");
+        // 空串视为"未知"，同样不参与比较。
+        let mut blank = lock("both", false);
+        blank.config_path = Some(String::new());
+        assert!(config_mismatch_msg(Some("/a/x.json"), &blank).is_none());
+    }
+
+    #[test]
+    fn legacy_lock_without_config_path_still_deserializes() {
+        // 1.9.0 之前写入的锁没有 `config_path` 字段。若该字段不是 serde(default)，
+        // 这里就会解析失败 -> 旧锁被 try_acquire_lock 当成损坏锁删除 -> 新实例
+        // 误判端口无主并直冲 bind -> 因端口被旧实例占着而启动失败。
+        let legacy = r#"{
+            "pid": 4321,
+            "transport": "http",
+            "allow_dual": false,
+            "endpoint": "127.0.0.1:8082/dynamic-mcp",
+            "exe_path": "/usr/bin/dmcp",
+            "started_at": "2026-07-14T00:00:00Z"
+        }"#;
+        let parsed: InstanceLock = serde_json::from_str(legacy).expect("旧锁必须能解析");
+        assert_eq!(parsed.pid, 4321);
+        assert!(parsed.config_path.is_none());
+    }
+
+    // ---- #1：降级文案不得再误导为"双开浪费" ----
+
+    #[test]
+    fn keep_stdio_msg_explains_coexistence_not_waste() {
+        let mut old = lock("both", false);
+        old.config_path = Some("/a/x.json".to_string());
+        let msg = keep_stdio_msg(TransportMode::Both, &old);
+        assert!(msg.contains("PID 12345"), "应带出旧实例身份：{msg}");
+        assert!(msg.contains("/a/x.json"), "应带出旧实例配置：{msg}");
+        assert!(!msg.contains("双开浪费"), "降级是预期行为，不是浪费：{msg}");
+        assert!(msg.contains("正常现象"), "应明确说明这是预期行为：{msg}");
+    }
+
+    #[test]
+    fn keep_stdio_msg_mentions_no_evict_opt_out() {
+        let msg = keep_stdio_msg(TransportMode::Both, &lock("http", true));
+        assert!(msg.contains("--no-evict"), "应说明是 --no-evict 生效：{msg}");
+        assert!(!msg.contains("双开浪费"), "和平共存不是浪费：{msg}");
     }
 }

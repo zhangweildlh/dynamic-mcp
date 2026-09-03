@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`dmcp status` 子命令** — 扫描 `~/.dynamic-mcp/locks/` 与 `~/.dynamic-mcp/instances/`，列出当前所有已知实例（HTTP 域端点锁 + STDIO 域登记文件），标记存活/死亡状态；无需配置文件即可调用。
+- **STDIO 登记机制** — stdio-only 实例启动时写 `~/.dynamic-mcp/instances/stdio-<pid>.json`（进程退出时 RAII 删除），不参与仲裁、仅供可观测性查询。
+- **配置一致性告警** — `InstanceLock` 新增 `config_path` 字段；两实例同端点但配置不同时，弹窗显式告警而非静默串味（`#[serde(default)]` 保障向后兼容，旧版锁文件仍可反序列化）。
+- **弹窗自动关闭** — 通知弹窗 15 秒后自动关闭（Windows `FindWindowW`+`PostMessageW(WM_CLOSE)` / macOS `giving up after` / Linux `notify-send -t`），用户可随时手动提前关闭；`SelfTerminate` 退出前多等 1 秒确保弹窗读完。
+
+### Changed
+
+- **决策函数 `decide()` 重写为规则驱动** — 原硬编码 `match` 改为优先级数值比较（`Both=3 > Http=2 > Stdio=1`），辅以 `parse_transport()` / `transport_priority()` / `has_stdio()` 辅助函数，对应 R0–R4 规则集语义更清晰。
+- **#12 降级提示文案修正** — 原 `_ =>` 兜底写"双开浪费"误导用户；新增 `keep_stdio_msg()` 三段式文案（旧实例身份 / 降级行为明确 / 强调"预期共存、非浪费"），并带出 `--no-evict` 退出路径。
+- **`--no-evict` 帮助文案正名** — 改为"保护**本实例**不被驱逐"，明确"该标志保护的是本实例 — 不是让本实例驱逐别人"。
+- **弹窗超时统一为 15 秒** — 常量 `POPUP_TIMEOUT_SECS = 15` 替代原硬编码 8 秒，README 同步更新。
+
+### Fixed
+
+- **`list_instances` 扩展名过滤 bug** — 原 `path.extension() != Some("json")` 会漏掉所有 `.lock` 文件（HTTP 域实例全部丢失）；修复为按来源类型分别过滤（`Lock => "lock"` / `Registry => "json"`）。
+
+> 本批次为单例可观测性增强（#1–#7），对应分支 `feat/singleton-observability`，编译与测试由 GitHub Actions CI 回归验证。
+
 ## [1.8.4] - 2026-08-13
 
 ### Added

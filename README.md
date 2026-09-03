@@ -518,6 +518,9 @@ dmcp --transport both /path/to/dynamic-mcp.json
 
 # 指定对外端点（host:port/path；IPv6 用 [host]:port/path）：
 dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
+
+# 查看当前所有 dmcp 实例（端点锁 + stdio 登记文件；不需要配置文件）：
+dmcp status
 ```
 
 当使用 `--transport http` 或 `both` 时，门面服务地址为 `http://<host>:<port><path>`（例如 `http://127.0.0.1:8082/dynamic-mcp`）。
@@ -554,19 +557,22 @@ dmcp --transport http --http-endpoint 0.0.0.0:9000/mcp /path/to/dynamic-mcp.json
 
 启动 `--transport http` / `both` 时，本 fork 会自动检测**同一个 HTTP 端点是否已有另一个实例在跑**，并自动化解冲突，不再静默失败或端口撞车。
 
-- 每个端点一把锁文件：`~/.dynamic-mcp/locks/<sha256(endpoint) 前 16 位>.lock`，记录 owner 的 pid、传输模式、`--no-evict` 标志与可执行路径。
+- 每个端点一把锁文件：`~/.dynamic-mcp/locks/<sha256(endpoint) 前 16 位>.lock`，记录 owner 的 pid、传输模式、`--no-evict` 标志、可执行路径与配置文件路径。
 - 通过 **pid 存活 + 可执行路径比对**识别过期锁，避免「pid 被复用」误判为存活实例。
 - 冲突决策（纯函数 `decide()`，已单测）：
-  - 多余的 `http` 实例：8 秒后**自我终止**，把端口让给先来的。
+  - 多余的 `http` 实例：**自我终止**，把端口让给先来的（等 15 秒再退出，这 15 秒是留给弹窗的阅读时间）。
   - 后到的 `both`：会**接管（evict）**已有的 `http`（除非那个 http 启动时带了 `--no-evict`），约 8 秒后占用端口、stdio 立即可用。
-  - `both` vs `both`（或 vs 带 `--no-evict` 的 `http`）：保留先来的，**后者只开 stdio、HTTP 关掉**，二者共存不冲突。
+  - `both` vs `both`（或 vs 带 `--no-evict` 的 `http`）：保留先来的，**后者只开 stdio、HTTP 关掉**，二者共存不冲突 —— 这是**设计好的共存方式，不是错误也不是浪费**。弹窗会带出先来实例的 PID / 模式 / 启动时间 / 配置路径，方便你判断要不要去关掉它。
 - 新增 `--no-evict` 参数（仅对纯 `http` 有效）：标记「这个 http 实例很重要，别杀我」，让后来的 `both` 与之和平共存（只开 stdio）。
-- 双层通知合并为单个弹窗：Windows `MessageBoxW` / Linux `notify-send` / macOS `osascript`，外加每平台 stderr 一行提示。
+- **配置一致性告警**：若本次要加载的配置文件，与同端口已在运行实例的那份**不是同一份**，弹窗会明确指出并同时列出两个路径。因为复用旧实例意味着沿用**它那份配置**——你实际拿到的工具集来自旧实例，而不是你命令行指定的这一份。多项目并行时，请给它们配置不同的 `--http-endpoint`（端口或路径不同即可）。
+- 通知合并为单个弹窗（最多四层：提示 / 双开 / 端口 / 配置）：Windows `MessageBoxW` / Linux `notify-send` / macOS `osascript`，外加每平台 stderr 一行提示。弹窗 **15 秒后自动关闭，也可以随时手动提前关掉**，不会一直杵在屏幕上挡事。
 - HTTP 绑定使用 `SO_REUSEADDR` + 约 10 秒重试，使接管能在端口处于 `TIME_WAIT` 期间完成。
+- **`dmcp status` 子命令**：列出当前所有已知实例（HTTP 域的端点锁 + STDIO 域的登记文件），逐条给出端点 / 模式 / PID / 存活状态 / 配置文件 / 启动时间。stdio 实例不绑端口、不写锁，此前在磁盘上不留任何痕迹、无从查询，现在同样可见可治理。
 
 **应用场景**：
 1. 你手滑点了两次 `dmcp --transport both`——第二次检测到第一次已占端口，自动只开 stdio、HTTP 关掉，避免「端口被占用」崩溃。
 2. 你先开一个常驻 `dmcp --transport http --no-evict config.json`（专门给浏览器用），后来桌面软件又拉起一个 `both`——因为 http 带了 `--no-evict`，`both` 不杀它，自己只开 stdio，两个实例和平共存。
+3. 你在 A、B 两个项目里各配了一份 `dynamic-mcp.json`，却都用了默认端口——`dmcp status` 一眼看出有几个实例在跑、各自用的哪份配置；配置不一致时弹窗会直接点破，避免「明明改了配置却没生效」的静默串味。
 
 ### 3. `--http-endpoint` 单一参数（破坏性变更）+ IPv6 / 弹窗修复
 

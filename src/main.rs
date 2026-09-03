@@ -48,9 +48,11 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:8082/dynamic-mcp")]
     http_endpoint: String,
 
-    /// When transport is `http`, allow a later `both` instance on the same
-    /// endpoint to run alongside (stdio only) instead of being evicted. Has no
-    /// effect with `--transport both` or `--transport stdio`.
+    /// Protect **this** instance from being evicted. A later `both` started on
+    /// the same endpoint will keep stdio only (HTTP off) instead of killing this
+    /// one, so the two coexist. Only valid with `--transport http`; passing it
+    /// with `both` or `stdio` exits with an error. (The flag protects this
+    /// instance — it does not let this instance evict anyone.)
     #[arg(long, default_value_t = false)]
     no_evict: bool,
 
@@ -82,6 +84,8 @@ enum Commands {
         #[arg(short, long, default_value = "dynamic-mcp.json")]
         output: String,
     },
+    /// List running dynamic-mcp instances (endpoint locks and stdio registrations)
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -203,6 +207,11 @@ async fn main() -> Result<()> {
                 .init();
             cli::import::run_import_from_tool(&tool_name, global, force, &output).await
         }
+        Some(Commands::Status) => {
+            // 纯查询：不需要配置文件、不连接任何后端、不影响运行中的实例。
+            run_status();
+            Ok(())
+        }
         None => {
             // Disable all logging for stdio mode to avoid corrupting JSON-RPC communication
             // Logging would write to stderr which interferes with the MCP protocol
@@ -239,6 +248,71 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+/// 列出当前所有已知的 dynamic-mcp 实例（`dmcp status`）。
+///
+/// 数据来自两处，二者性质不同，分开呈现：
+/// * `~/.dynamic-mcp/locks/*.json` —— http/both 实例的**端点锁**：争端口、
+///   参与仲裁（HTTP 域）；
+/// * `~/.dynamic-mcp/instances/*.json` —— stdio 实例的**登记文件**：不争端口、
+///   仅供查询（STDIO 域）。stdio 实例此前在磁盘上不留任何痕迹，无从治理。
+///
+/// 全程只读：不修改、不清理任何文件。进程被强杀而残留的记录会依据 pid 存活
+/// 状态标注为"已失效"，而不是当成活实例误报。
+///
+/// 输出用"卡片式"而非对齐表格：中文字符的显示宽度约为英文两倍，用固定列宽
+/// 排版会整体错位，卡片式在任何终端下都不会乱。
+fn run_status() {
+    let entries = singleton::list_instances();
+    if entries.is_empty() {
+        println!("当前没有任何 dynamic-mcp 实例留下记录。");
+        println!();
+        println!("提示：http/both 模式会在 ~/.dynamic-mcp/locks/ 留下端点锁，");
+        println!("      stdio 模式会在 ~/.dynamic-mcp/instances/ 留下登记文件。");
+        return;
+    }
+
+    let mut http_domain = 0usize;
+    let mut stdio_domain = 0usize;
+    for (i, e) in entries.iter().enumerate() {
+        let domain = match e.kind {
+            singleton::InstanceKind::Lock => {
+                http_domain += 1;
+                "HTTP 域（争端口、参与仲裁）"
+            }
+            singleton::InstanceKind::Registry => {
+                stdio_domain += 1;
+                "STDIO 域（不争端口、仅登记）"
+            }
+        };
+        let endpoint = if e.record.endpoint.is_empty() {
+            "（无端点）".to_string()
+        } else {
+            e.record.endpoint.clone()
+        };
+        let cfg = match &e.record.config_path {
+            Some(p) => p.clone(),
+            None => "（未记录）".to_string(),
+        };
+        let state = if e.alive {
+            "运行中"
+        } else {
+            "已失效（进程已退出，记录残留）"
+        };
+        println!("────────────────────────────────────────────");
+        println!("实例 [{}]  {}", i + 1, domain);
+        println!("  端点 : {}", endpoint);
+        println!("  模式 : {}", e.record.transport);
+        println!("  PID  : {}", e.record.pid);
+        println!("  状态 : {}", state);
+        println!("  配置 : {}", cfg);
+        println!("  启动 : {}", e.record.started_at);
+    }
+    println!("────────────────────────────────────────────");
+    println!("合计：{} 个", entries.len());
+    println!("HTTP 域：{} 个", http_domain);
+    println!("STDIO 域：{} 个", stdio_domain);
 }
 
 async fn run_server(
@@ -314,17 +388,20 @@ async fn run_server(
         ep_host.clone()
     };
     let display = format!("{}:{}", bind_host, ep_port);
+    // 配置路径仅用于诊断提示（配置不一致告警）与 `status` 清单，不参与锁键。
+    let cfg_hint = Some(config_path.as_str());
     let SingletonResult { mode, guard, popup } =
-        singleton::check_singleton(transport, &canonical, &display, no_evict).await;
-    // Hold the lock guard for the process lifetime so our lock file is removed on
-    // exit (unless a newer primary has overwritten it first).
+        singleton::check_singleton(transport, &canonical, &display, no_evict, cfg_hint).await;
+    // Hold the guard for the process lifetime so our lock file (http/both) or
+    // registration file (stdio) is removed on exit.
     let _singleton_guard = guard;
     popup.emit();
 
     if matches!(mode, StartMode::SelfTerminate) {
-        // Redundant http: the popup is already shown. Exit after 8s so the user
-        // can read it. Nothing else to do.
-        tokio::time::sleep(Duration::from_secs(8)).await;
+        // Redundant http: the popup is already shown. Exit only after the popup's
+        // own timeout (plus a small margin) so the user can read it in full —
+        // `exit()` kills the popup thread, so leaving earlier would cut it short.
+        tokio::time::sleep(Duration::from_secs(singleton::POPUP_TIMEOUT_SECS + 1)).await;
         std::process::exit(0);
     }
 
