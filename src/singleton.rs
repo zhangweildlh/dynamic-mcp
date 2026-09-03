@@ -1174,7 +1174,10 @@ mod tests {
     #[test]
     fn keep_stdio_msg_mentions_no_evict_opt_out() {
         let msg = keep_stdio_msg(TransportMode::Both, &lock("http", true));
-        assert!(msg.contains("--no-evict"), "应说明是 --no-evict 生效：{msg}");
+        assert!(
+            msg.contains("--no-evict"),
+            "应说明是 --no-evict 生效：{msg}"
+        );
         assert!(!msg.contains("双开浪费"), "和平共存不是浪费：{msg}");
     }
 
