@@ -545,19 +545,28 @@ This fork lets dynamic-mcp do more than a "stdio proxy" — it can also expose t
 
 When starting `--transport http` / `both`, this fork automatically detects **whether another instance is already running on the same HTTP endpoint**, and resolves conflicts automatically — no more silent failures or port collisions.
 
-- One lock file per endpoint: `~/.dynamic-mcp/locks/<sha256(endpoint) first 16 chars>.lock`, recording the owner's pid, transport mode, `--no-evict` flag, and executable path.
+- One lock file per endpoint: `~/.dynamic-mcp/locks/<sha256(endpoint) first 16 chars>.lock`, recording the owner's pid, transport mode, `--no-evict` flag, executable path, and (since this version) the config file path.
 - Stale locks are identified via **pid liveness + executable-path comparison**, avoiding false "alive" judgments from pid reuse.
-- Conflict decisions (pure function `decide()`, unit-tested):
-  - A redundant `http` instance: **self-terminates after 8 seconds**, yielding the port to the earlier one.
-  - A later `both`: **takes over (evicts)** an existing `http` (unless that http started with `--no-evict`), occupying the port ~8s later with stdio immediately usable.
-  - `both` vs `both` (or vs an `http` with `--no-evict`): keep the earlier one; the **later one runs stdio only, HTTP off** — both coexist without conflict.
-- Added the `--no-evict` flag (only valid for plain `http`): marks "this http instance is important, don't kill me", so a later `both` coexists peacefully (stdio only).
-- Two layers of notification merged into a single popup: Windows `MessageBoxW` / Linux `notify-send` / macOS `osascript`, plus one stderr line per platform.
+- Conflict decisions follow the **R0–R4 rule set** (pure function `decide()`, unit-tested):
+  - **R0 (domain split)**: stdio-only instances never arbitrate — they have no HTTP channel to conflict with, so multiple stdio instances can coexist.
+  - **R2/R3 (priority + action)**: `both` > `http` > `stdio`. New instance with higher priority evicts the old; otherwise the new instance yields.
+  - **R1 (yield method)**: a yielding instance keeps only its stdio channel (HTTP off) — it does not die, it just becomes a stdio-only instance.
+  - **R4 (sole exception)**: `--no-evict` exempts only "new `both` evicting old `http`" — the new `both` runs stdio only instead of killing the old `http`.
+  - Concrete behavior:
+    - A redundant `http` instance: **self-terminates after 15 seconds**, yielding the port to the earlier one.
+    - A later `both`: **takes over (evicts)** an existing `http` (unless that http started with `--no-evict`), occupying the port ~8s later with stdio immediately usable.
+    - `both` vs `both` (or vs an `http` with `--no-evict`): keep the earlier one; the **later one runs stdio only, HTTP off** — both coexist without conflict.
+- Added the `--no-evict` flag (only valid for plain `http`): marks "**this** instance must not be evicted" — it does **not** let this instance evict others. A later `both` will run stdio only instead of killing this `http`.
+- **Config-consistency warning**: when two instances share the same endpoint but use different config files, the popup explicitly warns about the mismatch (instead of staying silent). This prevents "project A's window accidentally serving project B's config" cross-contamination.
+- **Popup auto-close**: the notification popup closes automatically after **15 seconds** (enough reading time), but the user can manually close it earlier. The 15-second window also governs `SelfTerminate` exit delay, ensuring the popup is fully read before the process exits.
+- **STDIO registration**: each stdio-only instance writes a small registry file (`~/.dynamic-mcp/instances/stdio-<pid>.json`) at startup and deletes it on exit (RAII). These files do **not** participate in arbitration — they exist solely for observability.
+- Added the `dmcp status` subcommand: scans `~/.dynamic-mcp/locks/` and `~/.dynamic-mcp/instances/` to list all known instances (HTTP-domain locks + STDIO-domain registrations), marking each as alive/dead. No config file needed.
 - HTTP binding uses `SO_REUSEADDR` + ~10s retry, so takeover can complete while the port is in `TIME_WAIT`.
 
 **Application scenarios**:
 1. You double-click `dmcp --transport both` by accident — the second detects the first already holds the port, auto-runs stdio only with HTTP off, avoiding a "port occupied" crash.
 2. You first start a long-lived `dmcp --transport http --no-evict config.json` (dedicated to the browser), then your desktop app launches a `both` — because the http has `--no-evict`, `both` doesn't kill it and runs stdio only; the two instances coexist peacefully.
+3. You work on multiple projects in parallel, each with its own `dmcp --transport both projectN.json`. When two instances accidentally target the same endpoint, the popup now flags the config mismatch explicitly — you immediately see "this window is serving project A's config, not project B's", preventing silent cross-contamination. Run `dmcp status` to see all live instances at a glance.
 
 ### 3. Single `--http-endpoint` parameter (breaking change) + IPv6 / popup fixes
 
