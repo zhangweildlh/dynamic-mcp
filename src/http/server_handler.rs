@@ -13,6 +13,7 @@
 //! Cursor, etc.) to consume dynamic-mcp without a local stdio bridge.
 
 use crate::proxy::ModularMcpClient;
+use crate::singleton::dmcp_data_dir;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -421,22 +422,9 @@ fn result_err(text: String) -> CallToolResult {
 
 /// Resolve the directory for on-demand tool-artifact files (e.g. land_to_file
 /// output). Mirrors the log directory policy: next to the executable when
-/// writable, otherwise `%LOCALAPPDATA%/dynamic-mcp`.
+/// writable, otherwise `~/.dynamic-mcp/`.
 fn artifact_dir() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.exists() {
-                let probe = dir.join(format!(".dynamic-mcp-writable-{}.tmp", std::process::id()));
-                if std::fs::File::create(&probe).is_ok() {
-                    let _ = std::fs::remove_file(&probe);
-                    return dir.to_path_buf();
-                }
-            }
-        }
-    }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("dynamic-mcp")
+    dmcp_data_dir()
 }
 
 /// Serialize `value` to a uniquely-named JSON file and return its absolute

@@ -23,7 +23,7 @@ use watcher::ConfigWatcher;
 use http::server_handler::HttpFacadeHandler;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use singleton::{SingletonResult, StartMode};
+use singleton::{dmcp_data_dir, SingletonResult, StartMode};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
@@ -58,7 +58,7 @@ struct Cli {
 
     /// Log level: trace/debug/info/warn/error. Invalid value falls back to warn.
     /// When set: every mode writes a log file next to the executable
-    /// (falls back to data_local_dir/dynamic-mcp if not writable);
+    /// (falls back to ~/.dynamic-mcp/ if not writable);
     /// http mode also prints to stderr. stdio/both modes stay silent on
     /// stderr to protect the JSON-RPC channel.
     #[arg(long, value_name = "LEVEL")]
@@ -128,24 +128,13 @@ fn parse_level(s: &str) -> LevelFilter {
 }
 
 /// Resolve the directory for log/tool-dump files: next to the executable,
-/// falling back to `data_local_dir/dynamic-mcp` when the exe dir is missing
-/// or not writable (e.g. Program Files under restrictive ACLs / EDR).
+/// falling back to `~/.dynamic-mcp/` when the exe dir is missing or not
+/// writable (e.g. Program Files under restrictive ACLs / EDR).
+///
+/// 与 [`singleton::dmcp_data_dir`] 保持同一套优先/降级策略，确保锁、登记、
+/// 日志、产物四类文件落在同一个目录下。
 fn log_dir() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.exists() {
-                // exists() ≠ writable: probe with a temp file.
-                let probe = dir.join(format!(".dynamic-mcp-writable-{}.tmp", std::process::id()));
-                if std::fs::File::create(&probe).is_ok() {
-                    let _ = std::fs::remove_file(&probe);
-                    return dir.to_path_buf();
-                }
-            }
-        }
-    }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("dynamic-mcp")
+    dmcp_data_dir()
 }
 
 /// Delete `dynamic-*.log` files whose mtime is older than `max_age`,
@@ -253,9 +242,9 @@ async fn main() -> Result<()> {
 /// 列出当前所有已知的 dynamic-mcp 实例（`dmcp status`）。
 ///
 /// 数据来自两处，二者性质不同，分开呈现：
-/// * `~/.dynamic-mcp/locks/*.json` —— http/both 实例的**端点锁**：争端口、
-///   参与仲裁（HTTP 域）；
-/// * `~/.dynamic-mcp/instances/*.json` —— stdio 实例的**登记文件**：不争端口、
+/// * `<data_dir>/locks/*.json` —— http/both 实例的**端点锁**：争端口、
+///   参与仲裁（HTTP 域）；`data_dir` 优先 `dmcp.exe` 同目录，否则 `~/.dynamic-mcp/`。
+/// * `<data_dir>/instances/*.json` —— stdio 实例的**登记文件**：不争端口、
 ///   仅供查询（STDIO 域）。stdio 实例此前在磁盘上不留任何痕迹，无从治理。
 ///
 /// 全程只读：不修改、不清理任何文件。进程被强杀而残留的记录会依据 pid 存活
@@ -268,8 +257,15 @@ fn run_status() {
     if entries.is_empty() {
         println!("当前没有任何 dynamic-mcp 实例留下记录。");
         println!();
-        println!("提示：http/both 模式会在 ~/.dynamic-mcp/locks/ 留下端点锁，");
-        println!("      stdio 模式会在 ~/.dynamic-mcp/instances/ 留下登记文件。");
+        let data_dir = dmcp_data_dir();
+        println!(
+            "提示：http/both 模式会在 {}/locks/ 留下端点锁，",
+            data_dir.display()
+        );
+        println!(
+            "      stdio 模式会在 {}/instances/ 留下登记文件。",
+            data_dir.display()
+        );
         return;
     }
 
@@ -327,7 +323,7 @@ async fn run_server(
     // No `--log`: http mode defaults to WARN on stderr; stdio/both silent; no file.
     // With `--log <LEVEL>`: every mode writes a log file; http also prints to
     // stderr. stdio/both never print to stderr (protect JSON-RPC). File path =
-    // next to the executable, or data_local_dir/dynamic-mcp if not writable.
+    // next to the executable, or ~/.dynamic-mcp/ if not writable.
     let log_filter = log.as_deref().map(parse_level).unwrap_or(LevelFilter::WARN);
     let mut layers: Vec<
         Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
