@@ -11,11 +11,11 @@
 //! ## Mechanism
 //!
 //! Each `http`/`both` instance writes a lock file under
-//! `~/.dynamic-mcp/locks/<sha256(endpoint)[..16]>.lock`. The file name is a hash
-//! of the full endpoint, so **different endpoints never collide** (they are
-//! genuinely independent instances). On startup we atomically try to *create*
-//! that file (`O_EXCL`). If it already exists and belongs to a *live* dynamic-mcp
-//! process, we compare transport modes and decide what to do.
+//! `<data_dir>/locks/<sha256(endpoint)[..16]>.lock` —— `data_dir` 优先取
+//! `dmcp.exe` 同目录，不可写时降级 `~/.dynamic-mcp/`（见 [`dmcp_data_dir`]）。
+//! 文件名是端点的哈希，所以**不同端点永不碰撞**（它们确实是独立的实例）。
+//! 启动时原子地 *创建* 该文件（`O_EXCL`）；若已存在且属于一个*活着的*
+//! dynamic-mcp 进程，就比较传输模式再决定如何处理。
 //!
 //! ## Decisions (see [`decide`])
 //!
@@ -159,12 +159,34 @@ pub enum InstanceGuard {
 // Lock file paths
 // ---------------------------------------------------------------------------
 
-/// Directory holding all instance lock files: `~/.dynamic-mcp/locks/`.
-pub fn lock_dir() -> PathBuf {
+/// 解析 dynamic-mcp 的数据目录：**优先 `dmcp.exe` 同目录**，不可写时降级为
+/// `~/.dynamic-mcp/`。
+///
+/// 锁文件、登记文件、日志、工具产物都落在这个目录下。优先同目录是为了让每个
+/// 分发目录（便携版 / 自解压包 / 各平台二进制）自带一套完整状态，互不干扰；
+/// 降级到 `~/.dynamic-mcp/` 是为了在 Program Files 等受限目录下仍能跑。
+///
+/// 可写性用临时文件探针判定（`exists()` 不等于可写）。
+pub fn dmcp_data_dir() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.exists() {
+                let probe = dir.join(format!(".dynamic-mcp-writable-{}.tmp", std::process::id()));
+                if std::fs::File::create(&probe).is_ok() {
+                    let _ = std::fs::remove_file(&probe);
+                    return dir.to_path_buf();
+                }
+            }
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".dynamic-mcp")
-        .join("locks")
+}
+
+/// Directory holding all instance lock files: `<data_dir>/locks/`.
+pub fn lock_dir() -> PathBuf {
+    dmcp_data_dir().join("locks")
 }
 
 /// Lock file path for an endpoint: `<lock_dir>/<sha256(endpoint)[..16]>.lock`.
@@ -358,16 +380,13 @@ impl Drop for LockGuard {
     }
 }
 
-/// 登记文件目录：`~/.dynamic-mcp/instances/`。
+/// 登记文件目录：`<data_dir>/instances/`。
 ///
 /// 用于存放 stdio 实例的登记文件。stdio 实例不绑端口、不写锁，原本在磁盘上
 /// 不留任何痕迹，因而无法被查询和治理（"行为碰巧正确，但机制缺失"）。登记
 /// 文件**只供 `dmcp status` 读取，从不参与仲裁**（R0：STDIO 域豁免仲裁）。
 pub fn instances_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".dynamic-mcp")
-        .join("instances")
+    dmcp_data_dir().join("instances")
 }
 
 /// 登记文件路径：`~/.dynamic-mcp/instances/stdio-<pid>.json`。
