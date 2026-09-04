@@ -357,7 +357,7 @@ async fn run_server(
                 cleanup_old_logs(
                     &cleanup_dir,
                     &cleanup_path,
-                    std::time::Duration::from_secs(72 * 3600),
+                    std::time::Duration::from_secs(24 * 3600),
                 );
             });
         }
@@ -404,6 +404,21 @@ async fn run_server(
         tokio::time::sleep(Duration::from_secs(singleton::POPUP_TIMEOUT_SECS + 1)).await;
         std::process::exit(0);
     }
+
+    // 启动时自修复：清理上次非正常退出（强杀、崩溃）留下的残留登记文件与端点锁。
+    //
+    // **为什么放在 SelfTerminate 分支之后**：注定要退出的冗余实例自己不会留下
+    // 任何东西，让它去动全局清理属于职责错位（B2）。放在这里，只有确认会持续
+    // 运行的实例才做清扫。
+    //
+    // **为什么不必赶在 check_singleton() 之前**：单例检测依赖的 try_acquire_lock
+    // 自带陈旧锁判定（pid 已死或 exe 不匹配就删除后重试），陈旧锁不会干扰仲裁；
+    // 本函数补的是它覆盖不到的场景（stdio 模式、以及换了端点后没人再读的旧锁）。
+    //
+    // **为什么不用 tokio::spawn（与上方 cleanup_old_logs 不同）**：本函数会删除
+    // 失效记录，一旦与写锁/登记动作并发，就可能把本实例刚写下的记录当成陈旧项
+    // 删掉。残留文件通常只有 0~2 个，这点阻塞开销远小于该风险。
+    singleton::cleanup_orphans();
 
     tracing::info!(
         "Starting dynamic-mcp server with config: {} (from {})",
@@ -606,22 +621,23 @@ async fn run_server(
     // Keep watcher alive
     std::mem::forget(config_watcher);
 
-    // Set up signal handler for graceful shutdown
-    let client_for_shutdown = client.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Received shutdown signal, disconnecting all servers...");
-        let mut client_lock = client_for_shutdown.write().await;
-        let _ = client_lock.disconnect_all().await;
-        std::process::exit(0);
-    });
-
     let result = if stdio_enabled {
         let server = ModularMcpServer::new(client.clone(), name.clone(), version.clone());
-        server.run_stdio().await
+        // 用 select! 同时等待 run_stdio 和 Ctrl+C：
+        // - run_stdio 正常结束（stdin 关闭）→ 正常返回
+        // - Ctrl+C 收到 → 立即结束本分支、正常返回，不调用 exit(0)
+        // 关键：正常返回才能让 _singleton_guard 被 Drop，锁文件/登记文件才能被清理。
+        // 两条路径的 disconnect_all() 统一由下方的「Cleanup on normal exit」块
+        // 负责，这里不再重复调用，避免两条退出路径行为不一致。
+        tokio::select! {
+            result = server.run_stdio() => result,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("收到 Ctrl+C，正在退出...");
+                Ok(())
+            }
+        }
     } else {
-        // HTTP-only mode: the spawned HTTP task keeps serving until Ctrl-C,
-        // which the shutdown handler above uses to exit the process.
+        // HTTP-only mode: the spawned HTTP task keeps serving until Ctrl-C.
         tracing::info!("stdio transport disabled; running HTTP-only. Press Ctrl-C to stop.");
         tokio::signal::ctrl_c().await.ok();
         let mut client_lock = client.write().await;

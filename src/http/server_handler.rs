@@ -453,13 +453,13 @@ pub(crate) fn write_dynamic_tools_file(value: &serde_json::Value) -> std::io::Re
     Ok(path.to_string_lossy().to_string())
 }
 
-/// Remove `dynamic-tools-*.json` artifacts older than 72h (best-effort).
+/// Remove `dynamic-tools-*.json` artifacts older than 24h (best-effort).
 fn cleanup_dynamic_tools_artifacts(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(72 * 3600))
+        .checked_sub(std::time::Duration::from_secs(24 * 3600))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     for entry in entries {
         let Ok(entry) = entry else {

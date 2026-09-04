@@ -967,6 +967,117 @@ pub struct InstanceEntry {
     pub alive: bool,
 }
 
+/// 启动时清理所有"所属进程已失效"的残留记录文件（登记文件 + 端点锁）。
+///
+/// 进程被强杀（Task Manager、`taskkill /F`）时，负责清理的
+/// [`RegistryGuard::drop`] / [`LockGuard::drop`] 都不会执行，磁盘上便留下指向
+/// 已死进程的记录，让 `dmcp status` 把尸体当成活实例报出来。本函数在任何
+/// 实例启动时做一次兜底清扫。
+///
+/// **必须同步完成、且必须在 [`check_singleton`] 之前调用**：若与单例检测并发，
+/// 本函数有可能删掉本实例刚写下的锁，令仲裁机制彻底失效；故这里刻意不走
+/// `tokio::spawn`，与相邻的 [`cleanup_old_logs`]（纯年龄清理、无序要求）不同。
+///
+/// 判定残留的统一口径是 [`is_same_binary`]——它同时检查"pid 存活"与"确实是我
+/// 们自己的可执行程序"，与 [`try_acquire_lock`]、[`list_instances`] 保持一致。
+/// 只用 `is_pid_alive` 是不够的：Windows 的 pid 会回绕复用，一旦残留记录里的
+/// pid 被系统分给了别的程序，单看存活就会把尸体永远留在盘上。
+pub fn cleanup_orphans() {
+    cleanup_dead_registry_files(&instances_dir());
+    cleanup_dead_lock_files(&lock_dir());
+}
+
+/// 本进程可执行程序的绝对路径，用作"某个 pid 是不是另一个 dynamic-mcp"的基准。
+fn current_exe_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// 从 `stdio-<pid>.json` 这样的登记文件名里解析出 pid。
+///
+/// 登记文件名自带 pid（见 [`stdio_registry_path`]），因此可以**不打开文件内容**
+/// 就判断归属进程是否还活着——这是规避 TOCTOU 误删的关键：若去读文件内容，
+/// 恰好撞上别人写了一半（半截 JSON 解析失败）或在 Windows 上因文件被占用而
+/// 读取失败，都会被误判成"损坏文件"从而删掉一个活实例的登记。
+fn pid_from_registry_filename(filename: &str) -> Option<u32> {
+    filename
+        .strip_prefix("stdio-")?
+        .strip_suffix(".json")?
+        .parse::<u32>()
+        .ok()
+}
+
+/// 清理登记目录里所有"归属进程已失效"的 `stdio-*.json`。
+fn cleanup_dead_registry_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let my_exe = current_exe_path();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !filename.starts_with("stdio-") || !filename.ends_with(".json") {
+            continue;
+        }
+
+        // 文件名合规：只用 pid 判定，绝不读取文件内容。
+        if let Some(pid) = pid_from_registry_filename(filename) {
+            if is_same_binary(pid, &my_exe) {
+                // 存活的同胞实例 —— 动它不得。
+                continue;
+            }
+            let _ = fs::remove_file(&path);
+            tracing::info!("清理残留登记文件: {:?} (pid {} 已失效)", path, pid);
+            continue;
+        }
+
+        // 文件名不合规范（不是我们写出来的）：退回读内容取 pid。
+        // 读不到或解析不了就当损坏文件删掉——它连命名都不合规，不可能有效。
+        let Ok(content) = fs::read_to_string(&path) else {
+            let _ = fs::remove_file(&path);
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<InstanceLock>(&content) else {
+            let _ = fs::remove_file(&path);
+            continue;
+        };
+        if !is_same_binary(record.pid, &record.exe_path) {
+            let _ = fs::remove_file(&path);
+            tracing::info!("清理残留登记文件: {:?} (pid {} 已失效)", path, record.pid);
+        }
+    }
+}
+
+/// 清理锁目录里所有"归属进程已失效"的 `*.lock`。
+///
+/// 锁文件名是端点的哈希、**不含 pid**（见 [`lock_file_path`]），只能读内容取
+/// pid，因此这里比登记文件更保守：只有能明确判定为残留（pid 已死，或 pid 被
+/// 复用给了别的程序）才删除；**读失败或解析失败一律跳过**，交给
+/// [`try_acquire_lock`] 在真正要抢这个端点时处理——那样至少是在它自己的
+/// 加锁路径上，不会误伤其它实例正在写入的锁。
+fn cleanup_dead_lock_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("lock") {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<InstanceLock>(&content) else {
+            continue;
+        };
+        if !is_same_binary(record.pid, &record.exe_path) {
+            let _ = fs::remove_file(&path);
+            tracing::info!("清理残留锁文件: {:?} (pid {} 已失效)", path, record.pid);
+        }
+    }
+}
+
 /// 扫描 `locks/` 与 `instances/`，列出当前所有已知实例（供 `dmcp status` 使用）。
 ///
 /// 纯读取，不修改任何文件：过期记录的清理由各自持有者在退出时完成。这里只是
@@ -1208,5 +1319,141 @@ mod tests {
         let pid = std::process::id();
         let path = stdio_registry_path(pid);
         assert!(!path.exists(), "登记文件应在 guard drop 后自动删除");
+    }
+
+    // ---- cleanup_orphans：残留清理的判定路径（B1/B4/B5 回归） ----
+
+    /// 建一个干净的临时目录；按测试名 + pid 双重隔离，避免并行测试互相踩。
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("dmcp-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).expect("创建临时目录失败");
+        d
+    }
+
+    /// 一个几乎不可能存在的 pid：`is_same_binary` 对它必返回 false（pid 已死）。
+    const DEAD_PID: u32 = u32::MAX;
+
+    #[test]
+    fn cleanup_registry_removes_file_of_dead_pid() {
+        let dir = temp_dir("reg-dead");
+        let path = dir.join(format!("stdio-{DEAD_PID}.json"));
+        fs::write(&path, "{}").unwrap();
+        assert!(path.exists());
+
+        cleanup_dead_registry_files(&dir);
+
+        assert!(!path.exists(), "pid 已死的登记文件应被清理");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_registry_keeps_file_of_live_pid() {
+        // 用本测试进程自己的 pid 冒充"活着的同胞实例"：pid 存活且可执行文件路径
+        // 与本进程一致，is_same_binary 为真 → 必须保留。
+        let dir = temp_dir("reg-live");
+        let path = dir.join(format!("stdio-{}.json", std::process::id()));
+        fs::write(&path, "{}").unwrap();
+
+        cleanup_dead_registry_files(&dir);
+
+        assert!(path.exists(), "存活实例的登记文件绝不能被删");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_registry_never_deletes_live_pid_file_with_corrupt_content() {
+        // B4 回归：文件内容是损坏的，但 pid 存活。旧实现先读内容、解析失败即删，
+        // 于是误删了一个活实例的登记文件。修复后据文件名 pid 直接跳过，连内容
+        // 都不读。
+        let dir = temp_dir("reg-live-corrupt");
+        let path = dir.join(format!("stdio-{}.json", std::process::id()));
+        fs::write(&path, "this-is-not-json").unwrap();
+
+        cleanup_dead_registry_files(&dir);
+
+        assert!(
+            path.exists(),
+            "pid 存活时不得因内容损坏而删除（B4 TOCTOU 回归）"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_registry_reuses_dead_pid_is_still_removed() {
+        // B5 回归：pid 虽"存活"却不是我们自己的程序（模拟 Windows pid 复用）。
+        // 只判 is_pid_alive 会把它当成活实例而永久漏删，必须靠 exe 校验识别。
+        //
+        // 文件名刻意不合规范（stdio-abc.json 解析不出 pid），才会走"读内容取
+        // pid + exe_path"那条兜底分支 —— 合规文件名走的是"只用 pid、不读内容"
+        // 的路径，那里改文件内容是无效的。
+        let dir = temp_dir("reg-reuse");
+        let path = dir.join("stdio-abc.json");
+        let mut record = lock("stdio", false);
+        record.pid = std::process::id();
+        // 故意填一个绝非本进程的可执行路径，模拟 pid 被别的程序占用。
+        record.exe_path = "/definitely/not/this/binary".to_string();
+        fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        cleanup_dead_registry_files(&dir);
+
+        assert!(
+            !path.exists(),
+            "pid 存活但 exe 不匹配 = pid 被复用，应判为残留并清理（B5）"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_lock_removes_lock_of_dead_pid() {
+        // B1：锁文件此前完全无人清理，本用例锁住这条新覆盖。
+        let dir = temp_dir("lock-dead");
+        let path = dir.join("deadbeef12345678.lock");
+        let mut dead = lock("http", false);
+        dead.pid = DEAD_PID;
+        fs::write(&path, serde_json::to_string_pretty(&dead).unwrap()).unwrap();
+
+        cleanup_dead_lock_files(&dir);
+
+        assert!(!path.exists(), "pid 已死的锁文件应被清理（B1 覆盖缺口）");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_lock_keeps_lock_of_live_pid() {
+        let dir = temp_dir("lock-live");
+        let path = dir.join("cafebabe12345678.lock");
+        let mut live = lock("http", false);
+        live.pid = std::process::id();
+        live.exe_path = current_exe_path();
+        fs::write(&path, serde_json::to_string_pretty(&live).unwrap()).unwrap();
+
+        cleanup_dead_lock_files(&dir);
+
+        assert!(path.exists(), "存活实例持有的锁绝不能被删");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_lock_skips_unreadable_lock_conservatively() {
+        // 保守策略：锁文件名不含 pid、只能读内容；内容解析不了时一律跳过，
+        // 交给 try_acquire_lock 在真正抢端点时处理，避免误删他人正在写的锁。
+        let dir = temp_dir("lock-corrupt");
+        let path = dir.join("cafebabe12345678.lock");
+        fs::write(&path, "not-json-at-all").unwrap();
+
+        cleanup_dead_lock_files(&dir);
+
+        assert!(path.exists(), "无法判定的锁文件应保守跳过、不删除");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pid_from_registry_filename_parses_pid() {
+        assert_eq!(pid_from_registry_filename("stdio-4321.json"), Some(4321));
+        // 不合规范的文件名返回 None，交由读内容兜底。
+        assert_eq!(pid_from_registry_filename("stdio-abc.json"), None);
+        assert_eq!(pid_from_registry_filename("other-4321.json"), None);
+        assert_eq!(pid_from_registry_filename("stdio-4321.txt"), None);
     }
 }
