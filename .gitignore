@@ -1,5 +1,6 @@
 # releases
 /target
+/releases
 
 # dev
 TODO.md
