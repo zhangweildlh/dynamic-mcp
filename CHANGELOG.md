@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-09-04
+
+### Added
+
+- **启动自修复 `cleanup_orphans()`** — 启动时清理 pid 已死的残留登记文件（`instances/stdio-*.json`）与锁文件（`locks/*.lock`），防止高频启停（Task Manager 强杀）场景下文件堆积。
+- **测试覆盖** — 新增 9 个单元测试，覆盖清理逻辑、pid 复用判定、TOCTOU 防护、文件名解析等回归场景。
+
+### Changed
+
+- **Ctrl+C 优雅退出** — 移除 `exit(0)` 粗暴退出路径，改用 `tokio::select!` 同时等待 `run_stdio()` 与 `ctrl_c()`，确保 `_singleton_guard` 被正确 Drop、锁文件自动清理。
+- **判定逻辑统一** — 残留文件判定改用 `is_same_binary`（pid 存活 + exe 路径校验），与 `try_acquire_lock` / `list_instances` 口径一致，防止 Windows pid 复用漏删。
+- **TOCTOU 防护** — 登记文件改为从文件名读 pid，pid 活着直接跳过、不打开文件内容，消除读写竞态误删。
+- **日志清理窗口** — 日志/产物文件清理窗口从 72h 缩短为 24h，适应高频启停场景。
+
+### Fixed
+
+- **`.gitignore` 补漏** — 补写 `/releases` 规则，防止 4.5MB 构建产物误提交。
+
 ## [1.9.0] - 2026-09-03
 
 ### Added
