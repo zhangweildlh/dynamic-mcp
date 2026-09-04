@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-09-04
+
+### Changed
+
+- **数据目录本地化 `dmcp_data_dir()`** — 新增统一的数据目录解析函数：**优先 `dmcp.exe` 同目录**（便携化部署），目录不可写（如 Program Files 受限 ACL / EDR 拦截）时降级 `~/.dynamic-mcp/`。
+- **四类运行时文件统一落位** — 端点锁（`locks/`）、登记文件（`instances/`）、日志（`logs/`）、工具产物（`artifacts/`）全部基于 `dmcp_data_dir()` 解析，去掉三处各自重复的探针逻辑。
+- **`dmcp status` 提示改进** — 打印实际生效的 data_dir 路径，不再硬编码 `~/.dynamic-mcp/`。
+
+### Fixed
+
+- **rustfmt 格式修复** — `main.rs` 中 `println!` 行宽超限，按 `cargo fmt` 规范拆行。
+
+### 不变
+
+- OAuth token store 保持 `~/.dynamic-mcp/oauth-servers/`（认证凭据与运行时状态分离）。
+
 ## [1.9.1] - 2026-09-04
 
 ### Added
